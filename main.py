@@ -14,7 +14,7 @@ class PdfToSvgCropper(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("PDF to SVG Cropper")
-        self.minsize(800, 900)
+        self.minsize(800, 700)
 
         # State
         self.doc = None
@@ -23,6 +23,8 @@ class PdfToSvgCropper(tk.Tk):
         self.scale = 1.0
         self.zoom_level = 1.0  # User zoom multiplier
         self.auto_fit = True  # Whether to auto-fit to window
+        self.pan_offset = [0, 0]  # Pan offset [x, y]
+        self.pan_start = None  # For middle-button drag
         self.photo = None  # keep reference
         self.selection_rect_id = None
         self.sel_start = None
@@ -51,14 +53,20 @@ class PdfToSvgCropper(tk.Tk):
         top = ttk.Frame(self, padding="4")
         top.pack(side=tk.TOP, fill=tk.X)
 
-        btn_open = ttk.Button(top, text="Open PDF", command=self.open_pdf)
-        btn_open.pack(side=tk.LEFT, padx=4, pady=4)
+        # Create style for icon buttons
+        style = ttk.Style()
+        style.configure('Icon.TButton', font=('Segoe UI Emoji', 14))
 
-        btn_recent = ttk.Button(top, text="Open Recent", command=self.open_recent)
+        btn_open = ttk.Button(top, text="📁", command=self.open_pdf, style='Icon.TButton', width=2.9)
+        btn_open.pack(side=tk.LEFT, padx=4, pady=4)
+        self._create_tooltip(btn_open, "Open PDF")
+
+        btn_recent = ttk.Button(top, text="🕒", command=self.open_recent, style='Icon.TButton', width=2.9)
         btn_recent.pack(side=tk.LEFT, padx=2, pady=4)
+        self._create_tooltip(btn_recent, "Open Recent")
 
         ttk.Label(top, text="URL:").pack(side=tk.LEFT, padx=(12, 2))
-        self.url_entry = ttk.Entry(top, width=30)
+        self.url_entry = ttk.Entry(top, width=25)
         self.url_entry.pack(side=tk.LEFT, padx=2)
         self.url_entry.bind("<Return>", lambda e: self.open_from_url())
         btn_open_url = ttk.Button(top, text="Open", command=self.open_from_url)
@@ -85,7 +93,7 @@ class PdfToSvgCropper(tk.Tk):
         self.kern_check = ttk.Checkbutton(top, text="Remove manual kerns", variable=self.remove_kerning)
         self.kern_check.pack(side=tk.LEFT, padx=4)
 
-        self.bg_check = ttk.Checkbutton(top, text="Remove background", variable=self.remove_background)
+        self.bg_check = ttk.Checkbutton(top, text="Remove bg", variable=self.remove_background)
         self.bg_check.pack(side=tk.LEFT, padx=4)
 
         self.gray_check = ttk.Checkbutton(top, text="Grayscale", variable=self.convert_grayscale)
@@ -93,11 +101,13 @@ class PdfToSvgCropper(tk.Tk):
 
         ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
 
-        btn_export = ttk.Button(top, text="Export Selection as SVG…", command=self.export_selection_as_svg)
+        btn_export = ttk.Button(top, text="💾", command=self.export_selection_as_svg, style='Icon.TButton', width=2.9)
         btn_export.pack(side=tk.LEFT, padx=4)
+        self._create_tooltip(btn_export, "Export Selection as SVG")
 
-        btn_copy = ttk.Button(top, text="Copy SVG to Clipboard", command=self.copy_svg_to_clipboard)
+        btn_copy = ttk.Button(top, text="📋", command=self.copy_svg_to_clipboard, style='Icon.TButton', width=2.9)
         btn_copy.pack(side=tk.LEFT, padx=2)
+        self._create_tooltip(btn_copy, "Copy SVG to Clipboard")
 
         # Status bar at bottom
         self.status_bar = ttk.Label(self, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
@@ -117,6 +127,23 @@ class PdfToSvgCropper(tk.Tk):
         # For Linux
         self.canvas.bind("<Control-Button-4>", self._on_zoom)
         self.canvas.bind("<Control-Button-5>", self._on_zoom)
+        
+        # Mouse wheel pan (scroll without Ctrl)
+        self.canvas.bind("<MouseWheel>", self._on_pan_scroll)
+        # For Linux
+        self.canvas.bind("<Button-4>", self._on_pan_scroll)
+        self.canvas.bind("<Button-5>", self._on_pan_scroll)
+        
+        # Middle-button pan
+        self.canvas.bind("<Button-2>", self._on_pan_start)
+        self.canvas.bind("<B2-Motion>", self._on_pan_drag)
+        self.canvas.bind("<ButtonRelease-2>", self._on_pan_end)
+        
+        # Keyboard navigation
+        self.bind("<Left>", lambda e: self.prev_page())
+        self.bind("<Right>", lambda e: self.next_page())
+        self.bind("<Up>", lambda e: self.prev_page())
+        self.bind("<Down>", lambda e: self.next_page())
 
     # -------------------- PDF handling --------------------
     def _load_recent_files(self):
@@ -161,6 +188,9 @@ class PdfToSvgCropper(tk.Tk):
             self.doc = fitz.open(path)
             self.pdf_path = path
             self.page_index = 0
+            self.pan_offset = [0, 0]  # Reset pan
+            self.zoom_level = 1.0  # Reset zoom
+            self.auto_fit = True  # Re-enable auto-fit
             self._add_to_recent(path)
             self._update_page_label()
             self._render_current_page()
@@ -261,6 +291,7 @@ class PdfToSvgCropper(tk.Tk):
             return
         if self.page_index > 0:
             self.page_index -= 1
+            self.pan_offset = [0, 0]  # Reset pan on page change
             self._update_page_label()
             self._render_current_page()
 
@@ -269,6 +300,7 @@ class PdfToSvgCropper(tk.Tk):
             return
         if self.page_index < self.doc.page_count - 1:
             self.page_index += 1
+            self.pan_offset = [0, 0]  # Reset pan on page change
             self._update_page_label()
             self._render_current_page()
 
@@ -280,6 +312,7 @@ class PdfToSvgCropper(tk.Tk):
             page_num = int(self.page_entry.get())
             if 1 <= page_num <= self.doc.page_count:
                 self.page_index = page_num - 1
+                self.pan_offset = [0, 0]  # Reset pan on page change
                 self._update_page_label()
                 self._render_current_page()
             else:
@@ -331,9 +364,9 @@ class PdfToSvgCropper(tk.Tk):
         self.photo = ImageTk.PhotoImage(pil_img)
 
         self.canvas.delete("all")
-        # center horizontally
-        x_off = (c_w - self.photo.width()) // 2
-        y_off = max((c_h - self.photo.height()) // 2, 0)
+        # center horizontally and apply pan offset
+        x_off = (c_w - self.photo.width()) // 2 + self.pan_offset[0]
+        y_off = max((c_h - self.photo.height()) // 2, 0) + self.pan_offset[1]
         self.canvas.create_image(x_off, y_off, anchor=tk.NW, image=self.photo, tags=("page",))
 
         # Store image origin to map between canvas and image coords
@@ -365,6 +398,52 @@ class PdfToSvgCropper(tk.Tk):
             self.zoom_level = new_zoom
             self.auto_fit = False  # Disable auto-fit when user zooms
             self._render_current_page()
+    
+    def _on_pan_scroll(self, event):
+        """Handle mouse wheel pan (without Ctrl)"""
+        if not self.doc:
+            return
+        
+        # Determine scroll direction and amount
+        if hasattr(event, 'delta'):
+            # Windows/macOS - use delta value directly for smooth scrolling
+            delta_y = event.delta // 2  # Scale down for reasonable speed
+        elif event.num == 4:  # Linux scroll up
+            delta_y = 60
+        elif event.num == 5:  # Linux scroll down
+            delta_y = -60
+        else:
+            return
+        
+        self.pan_offset[1] += delta_y
+        self.auto_fit = False
+        self._render_current_page()
+    
+    def _on_pan_start(self, event):
+        """Start middle-button pan"""
+        if not self.doc:
+            return
+        self.pan_start = (event.x, event.y)
+        self.canvas.config(cursor="fleur")  # Change cursor to move/pan cursor
+    
+    def _on_pan_drag(self, event):
+        """Handle middle-button drag pan"""
+        if self.pan_start is None:
+            return
+        
+        dx = event.x - self.pan_start[0]
+        dy = event.y - self.pan_start[1]
+        
+        self.pan_offset[0] += dx
+        self.pan_offset[1] += dy
+        self.pan_start = (event.x, event.y)
+        self.auto_fit = False
+        self._render_current_page()
+    
+    def _on_pan_end(self, event):
+        """End middle-button pan"""
+        self.pan_start = None
+        self.canvas.config(cursor="")  # Reset cursor
     
     def _on_mouse_down(self, event):
         if not self.doc or not hasattr(self, "img_origin"):
@@ -621,6 +700,24 @@ class PdfToSvgCropper(tk.Tk):
             self._set_status("✓ SVG code copied to clipboard")
         except Exception as e:
             messagebox.showerror("Copy SVG", f"Failed to copy SVG:\n{e}")
+
+    def _create_tooltip(self, widget, text):
+        """Create a tooltip for a widget"""
+        def on_enter(event):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+            label = ttk.Label(tooltip, text=text, background="#ffffe0", relief=tk.SOLID, borderwidth=1, padding=2)
+            label.pack()
+            widget.tooltip = tooltip
+        
+        def on_leave(event):
+            if hasattr(widget, 'tooltip'):
+                widget.tooltip.destroy()
+                del widget.tooltip
+        
+        widget.bind("<Enter>", on_enter)
+        widget.bind("<Leave>", on_leave)
 
 
 def main():

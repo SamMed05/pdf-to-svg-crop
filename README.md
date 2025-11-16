@@ -1,16 +1,32 @@
-# PDF to SVG Cropper (GUI)
+# PDF to SVG Cropper
 
-A minimal desktop app to view a PDF, select an area visually, and export that selection as an SVG (vector) snippet. Also supports copying the SVG code to clipboard.
+A simple desktop app to view PDFs, select areas, and export those selections as SVG (plus some customization options) or copy to the clipboard directly.
 
 Built with Python + Tkinter + PyMuPDF.
 
+![screenshot](screenshot.png)
+
 ## Features
 
-- Open multi-page PDFs
-- Page navigation (Prev/Next)
+**PDF Loading**
+- Open local files or URLs (http/https)
+- Open from `file://` links with page anchors (`#page=N`)
+- Recent files history
+
+**Navigation**
+- Multi-page support with Prev/Next buttons (or arrow keys)
+- Direct page number entry
+- Ctrl+Scroll to zoom
+- Scroll wheel to pan vertically
+- Middle-button drag to pan in any direction
+
+**Selection & Export**
 - Click-and-drag selection rectangle
-- Export selection to `.svg` (vector) using MuPDF clipping
-- Copy SVG code to clipboard
+- Export to `.svg` file or copy to clipboard
+- Text preservation (preserve as text vs paths)
+- Remove manual character kerning
+- Remove white backgrounds
+- Convert to grayscale
 
 ## Requirements
 
@@ -20,9 +36,8 @@ Built with Python + Tkinter + PyMuPDF.
 ## Setup
 
 ```pwsh
-# From project root
 python -m venv .venv
-. .venv/Scripts/Activate.ps1
+. .venv/Scripts/Activate.ps1  # Windows
 pip install -r requirements.txt
 ```
 
@@ -32,13 +47,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## How it works
-
-- The page is rendered as an image preview for fast UI.
-- The selected rectangle is mapped back to PDF points.
-- A new in-memory one-page PDF is created with that clip applied, and then converted to SVG via MuPDF (`page.get_svg_image()`).
-
 ## Notes
 
-- SVG export preserves vectors; text may be converted to paths depending on PDF content.
-- If your selection is empty or outside the page, export is disabled.
+- SVG export uses vector clipping for accurate results
+- Downloaded PDFs from URLs are saved to temp directory
+- Pan/zoom reset when changing pages
