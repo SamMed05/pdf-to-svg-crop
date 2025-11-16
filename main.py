@@ -1,0 +1,433 @@
+import io
+import json
+import os
+import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from pathlib import Path
+
+import fitz  # PyMuPDF
+from PIL import Image, ImageTk
+
+
+class PdfToSvgCropper(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("PDF to SVG Cropper")
+        self.minsize(800, 900)
+
+        # State
+        self.doc = None
+        self.pdf_path = None
+        self.page_index = 0
+        self.scale = 1.0
+        self.photo = None  # keep reference
+        self.selection_rect_id = None
+        self.sel_start = None
+        self.sel_end = None
+        self.recent_files_path = Path.home() / ".pdf_to_svg_recent.json"
+        self.recent_files = self._load_recent_files()
+        self.preserve_text = tk.BooleanVar(value=True)
+        self.remove_kerning = tk.BooleanVar(value=False)
+
+        # UI
+        self._build_ui()
+
+        # re-render on resize
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+
+    def _build_ui(self):
+        # Top controls
+        top = tk.Frame(self)
+        top.pack(side=tk.TOP, fill=tk.X)
+
+        btn_open = tk.Button(top, text="Open PDF", command=self.open_pdf)
+        btn_open.pack(side=tk.LEFT, padx=4, pady=4)
+
+        btn_recent = tk.Button(top, text="Open Recent", command=self.open_recent)
+        btn_recent.pack(side=tk.LEFT, padx=2, pady=4)
+
+        tk.Label(top, text="Page:").pack(side=tk.LEFT, padx=(12, 2))
+        self.page_entry = tk.Entry(top, width=5)
+        self.page_entry.pack(side=tk.LEFT, padx=2)
+        self.page_entry.bind("<Return>", lambda e: self.goto_page())
+        self.page_label = tk.Label(top, text="/-")
+        self.page_label.pack(side=tk.LEFT, padx=0)
+
+        btn_prev = tk.Button(top, text="Prev", command=self.prev_page)
+        btn_prev.pack(side=tk.LEFT, padx=(8, 2))
+
+        btn_next = tk.Button(top, text="Next", command=self.next_page)
+        btn_next.pack(side=tk.LEFT, padx=2)
+
+        self.text_check = tk.Checkbutton(top, text="Preserve text", variable=self.preserve_text)
+        self.text_check.pack(side=tk.LEFT, padx=(12, 4))
+
+        self.kern_check = tk.Checkbutton(top, text="Remove manual kerns", variable=self.remove_kerning)
+        self.kern_check.pack(side=tk.LEFT, padx=4)
+
+        btn_export = tk.Button(top, text="Export Selection as SVG…", command=self.export_selection_as_svg)
+        btn_export.pack(side=tk.LEFT, padx=4)
+
+        btn_copy = tk.Button(top, text="Copy SVG to Clipboard", command=self.copy_svg_to_clipboard)
+        btn_copy.pack(side=tk.LEFT, padx=2)
+
+        # Canvas for page preview
+        self.canvas = tk.Canvas(self, bg="#2b2b2b", highlightthickness=0)
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Mouse bindings for selection
+        self.canvas.bind("<Button-1>", self._on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
+
+    # -------------------- PDF handling --------------------
+    def _load_recent_files(self):
+        """Load recent files list from disk"""
+        try:
+            if self.recent_files_path.exists():
+                with open(self.recent_files_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # Filter out files that no longer exist
+                    return [p for p in data if Path(p).exists()]
+        except Exception:
+            pass
+        return []
+
+    def _save_recent_files(self):
+        """Save recent files list to disk"""
+        try:
+            with open(self.recent_files_path, "w", encoding="utf-8") as f:
+                json.dump(self.recent_files, f)
+        except Exception:
+            pass
+
+    def _add_to_recent(self, path):
+        """Add a file to recent list (move to top if already present)"""
+        path = str(Path(path).absolute())
+        if path in self.recent_files:
+            self.recent_files.remove(path)
+        self.recent_files.insert(0, path)
+        # Keep only last 10
+        self.recent_files = self.recent_files[:10]
+        self._save_recent_files()
+
+    def open_pdf(self, path=None):
+        if path is None:
+            path = filedialog.askopenfilename(
+                title="Open PDF",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+        if not path:
+            return
+        try:
+            self.doc = fitz.open(path)
+            self.pdf_path = path
+            self.page_index = 0
+            self._add_to_recent(path)
+            self._update_page_label()
+            self._render_current_page()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open PDF:\n{e}")
+            self.doc = None
+            self.pdf_path = None
+
+    def open_recent(self):
+        """Show menu of recent files"""
+        if not self.recent_files:
+            messagebox.showinfo("Open Recent", "No recent files")
+            return
+        # Create popup menu
+        menu = tk.Menu(self, tearoff=0)
+        for fpath in self.recent_files:
+            fname = Path(fpath).name
+            menu.add_command(label=fname, command=lambda p=fpath: self.open_pdf(p))
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _update_page_label(self):
+        if self.doc:
+            self.page_label.config(text=f"/{self.doc.page_count}")
+            self.page_entry.delete(0, tk.END)
+            self.page_entry.insert(0, str(self.page_index + 1))
+        else:
+            self.page_label.config(text="/-")
+            self.page_entry.delete(0, tk.END)
+
+    def prev_page(self):
+        if not self.doc:
+            return
+        if self.page_index > 0:
+            self.page_index -= 1
+            self._update_page_label()
+            self._render_current_page()
+
+    def next_page(self):
+        if not self.doc:
+            return
+        if self.page_index < self.doc.page_count - 1:
+            self.page_index += 1
+            self._update_page_label()
+            self._render_current_page()
+
+    def goto_page(self):
+        """Jump to page number entered in entry field"""
+        if not self.doc:
+            return
+        try:
+            page_num = int(self.page_entry.get())
+            if 1 <= page_num <= self.doc.page_count:
+                self.page_index = page_num - 1
+                self._update_page_label()
+                self._render_current_page()
+            else:
+                messagebox.showwarning("Go to Page", f"Page must be between 1 and {self.doc.page_count}")
+        except ValueError:
+            messagebox.showwarning("Go to Page", "Please enter a valid page number")
+
+    def _on_canvas_resize(self, _event):
+        # re-render to fit new size
+        if self.doc:
+            self._render_current_page()
+
+    def _render_current_page(self):
+        if not self.doc:
+            return
+        page = self.doc.load_page(self.page_index)
+        page_rect = page.rect
+
+        # choose scale to fit canvas width while keeping aspect; fallback if canvas not realized yet
+        c_w = max(self.canvas.winfo_width(), 1)
+        c_h = max(self.canvas.winfo_height(), 1)
+        if c_w <= 1 or c_h <= 1:
+            # likely not realized; schedule later
+            self.after(50, self._render_current_page)
+            return
+
+        # fit to width with some padding
+        padding = 16
+        target_w = max(c_w - padding * 2, 100)
+        self.scale = target_w / page_rect.width
+        target_h = int(page_rect.height * self.scale)
+
+        mat = fitz.Matrix(self.scale, self.scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+
+        # Convert to PIL image
+        img_data = pix.tobytes("png")
+        pil_img = Image.open(io.BytesIO(img_data))
+        self.photo = ImageTk.PhotoImage(pil_img)
+
+        self.canvas.delete("all")
+        # center horizontally
+        x_off = (c_w - self.photo.width()) // 2
+        y_off = max((c_h - self.photo.height()) // 2, 0)
+        self.canvas.create_image(x_off, y_off, anchor=tk.NW, image=self.photo, tags=("page",))
+
+        # Store image origin to map between canvas and image coords
+        self.img_origin = (x_off, y_off)
+
+        # Reset selection
+        self._clear_selection()
+
+    # -------------------- Selection handling --------------------
+    def _on_mouse_down(self, event):
+        if not self.doc or not hasattr(self, "img_origin"):
+            return
+        x0 = event.x - self.img_origin[0]
+        y0 = event.y - self.img_origin[1]
+        if not self._point_inside_image(x0, y0):
+            return
+        self.sel_start = (max(0, x0), max(0, y0))
+        self.sel_end = self.sel_start
+        self._draw_selection()
+
+    def _on_mouse_drag(self, event):
+        if self.sel_start is None or not hasattr(self, "img_origin"):
+            return
+        x1 = event.x - self.img_origin[0]
+        y1 = event.y - self.img_origin[1]
+        self.sel_end = (x1, y1)
+        self._draw_selection()
+
+    def _on_mouse_up(self, _event):
+        # Finalize selection
+        pass
+
+    def _draw_selection(self):
+        self._remove_selection_rect()
+        if self.sel_start is None or self.sel_end is None:
+            return
+        x0, y0 = self.sel_start
+        x1, y1 = self.sel_end
+        # clamp to image bounds if we know size
+        if self.photo:
+            w, h = self.photo.width(), self.photo.height()
+            x0 = min(max(0, x0), w)
+            y0 = min(max(0, y0), h)
+            x1 = min(max(0, x1), w)
+            y1 = min(max(0, y1), h)
+        rx0, ry0 = min(x0, x1), min(y0, y1)
+        rx1, ry1 = max(x0, x1), max(y0, y1)
+        # draw rectangle relative to canvas with offset
+        ox, oy = getattr(self, "img_origin", (0, 0))
+        self.selection_rect_id = self.canvas.create_rectangle(
+            rx0 + ox,
+            ry0 + oy,
+            rx1 + ox,
+            ry1 + oy,
+            outline="#00e1ff",
+            width=2,
+        )
+
+    def _remove_selection_rect(self):
+        if self.selection_rect_id is not None:
+            self.canvas.delete(self.selection_rect_id)
+            self.selection_rect_id = None
+
+    def _clear_selection(self):
+        self.sel_start = None
+        self.sel_end = None
+        self._remove_selection_rect()
+
+    def _point_inside_image(self, x, y):
+        if not self.photo:
+            return False
+        return 0 <= x < self.photo.width() and 0 <= y < self.photo.height()
+
+    def _get_selection_rect_image_coords(self):
+        if self.sel_start is None or self.sel_end is None or not self.photo:
+            return None
+        x0, y0 = self.sel_start
+        x1, y1 = self.sel_end
+        w, h = self.photo.width(), self.photo.height()
+        # clamp
+        x0 = min(max(0, x0), w)
+        y0 = min(max(0, y0), h)
+        x1 = min(max(0, x1), w)
+        y1 = min(max(0, y1), h)
+        rx0, ry0 = min(x0, x1), min(y0, y1)
+        rx1, ry1 = max(x0, x1), max(y0, y1)
+        if rx1 - rx0 < 1 or ry1 - ry0 < 1:
+            return None
+        return (rx0, ry0, rx1, ry1)
+
+    # -------------------- SVG export --------------------
+    def _selection_pdf_rect(self):
+        sel = self._get_selection_rect_image_coords()
+        if not sel or not self.doc:
+            return None
+        x0, y0, x1, y1 = sel
+        # map image px to PDF points
+        px_to_pt = 1.0 / max(self.scale, 1e-6)
+        left = x0 * px_to_pt
+        top = y0 * px_to_pt
+        right = x1 * px_to_pt
+        bottom = y1 * px_to_pt
+        return fitz.Rect(left, top, right, bottom)
+
+    def _svg_from_selection(self):
+        if not self.doc:
+            raise RuntimeError("No PDF open")
+        clip_rect = self._selection_pdf_rect()
+        if not clip_rect:
+            raise RuntimeError("No valid selection to export")
+        if clip_rect.width <= 0 or clip_rect.height <= 0:
+            raise RuntimeError("Selection has zero size")
+
+        # Create in-memory one-page PDF with the clipped area
+        src_pno = self.page_index
+        out = fitz.open()
+        page = out.new_page(width=clip_rect.width, height=clip_rect.height)
+        # target rect is the full new page
+        target = fitz.Rect(0, 0, clip_rect.width, clip_rect.height)
+        page.show_pdf_page(target, self.doc, src_pno, clip=clip_rect)
+        # Use text preservation mode if checkbox is enabled
+        svg = page.get_svg_image(text_as_path=not self.preserve_text.get())
+        
+        # Remove manual kerning if requested
+        if self.preserve_text.get() and self.remove_kerning.get():
+            svg = self._remove_svg_kerning(svg)
+        
+        out.close()
+        return svg
+
+    def _remove_svg_kerning(self, svg):
+        """Remove individual character positioning from SVG text elements"""
+        import re
+        # Find text elements with x/y arrays (manual positioning)
+        # Merge characters into single text element at starting position
+        def merge_text_spans(match):
+            full_tag = match.group(0)
+            # Extract x and y arrays
+            x_match = re.search(r'x="([^"]+)"', full_tag)
+            y_match = re.search(r'y="([^"]+)"', full_tag)
+            # Extract text content
+            text_match = re.search(r'>([^<]+)<', full_tag)
+            
+            if x_match and y_match and text_match:
+                x_vals = x_match.group(1).split()
+                y_vals = y_match.group(1).split()
+                text = text_match.group(1)
+                
+                # Use first position only, remove individual char positioning
+                if len(x_vals) > 0 and len(y_vals) > 0:
+                    first_x = x_vals[0]
+                    first_y = y_vals[0]
+                    # Rebuild text element with single position
+                    new_tag = re.sub(r'x="[^"]+"', f'x="{first_x}"', full_tag)
+                    new_tag = re.sub(r'y="[^"]+"', f'y="{first_y}"', new_tag)
+                    return new_tag
+            
+            return full_tag
+        
+        # Pattern to match text elements with coordinate arrays
+        pattern = r'<text[^>]*x="[^"]*\s[^"]*"[^>]*y="[^"]*"[^>]*>[^<]+</text>'
+        svg = re.sub(pattern, merge_text_spans, svg)
+        
+        return svg
+
+    def export_selection_as_svg(self):
+        try:
+            svg = self._svg_from_selection()
+        except Exception as e:
+            messagebox.showwarning("Export SVG", str(e))
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save SVG",
+            defaultextension=".svg",
+            filetypes=[("SVG", "*.svg")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(svg)
+            messagebox.showinfo("Export SVG", f"Saved: {path}")
+        except Exception as e:
+            messagebox.showerror("Export SVG", f"Failed to save SVG:\n{e}")
+
+    def copy_svg_to_clipboard(self):
+        try:
+            svg = self._svg_from_selection()
+        except Exception as e:
+            messagebox.showwarning("Copy SVG", str(e))
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(svg)
+            self.update()  # ensure clipboard set
+            messagebox.showinfo("Copy SVG", "SVG code copied to clipboard")
+        except Exception as e:
+            messagebox.showerror("Copy SVG", f"Failed to copy SVG:\n{e}")
+
+
+def main():
+    app = PdfToSvgCropper()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
