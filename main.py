@@ -40,6 +40,12 @@ class PdfToSvgCropper(tk.Tk):
         # re-render on resize
         self.canvas.bind("<Configure>", self._on_canvas_resize)
 
+    def _set_status(self, message, duration=3000):
+        """Set status bar message and clear after duration (ms)"""
+        self.status_bar.config(text=message)
+        if duration > 0:
+            self.after(duration, lambda: self.status_bar.config(text="Ready"))
+
     def _build_ui(self):
         # Top controls
         top = ttk.Frame(self, padding="4")
@@ -92,6 +98,10 @@ class PdfToSvgCropper(tk.Tk):
 
         btn_copy = ttk.Button(top, text="Copy SVG to Clipboard", command=self.copy_svg_to_clipboard)
         btn_copy.pack(side=tk.LEFT, padx=2)
+
+        # Status bar at bottom
+        self.status_bar = ttk.Label(self, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
         # Canvas for page preview
         self.canvas = tk.Canvas(self, bg="#2b2b2b", highlightthickness=0)
@@ -594,7 +604,7 @@ class PdfToSvgCropper(tk.Tk):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(svg)
-            messagebox.showinfo("Export SVG", f"Saved: {path}")
+            self._set_status(f"✓ Saved: {Path(path).name}")
         except Exception as e:
             messagebox.showerror("Export SVG", f"Failed to save SVG:\n{e}")
 
@@ -608,7 +618,7 @@ class PdfToSvgCropper(tk.Tk):
             self.clipboard_clear()
             self.clipboard_append(svg)
             self.update()  # ensure clipboard set
-            messagebox.showinfo("Copy SVG", "SVG code copied to clipboard")
+            self._set_status("✓ SVG code copied to clipboard")
         except Exception as e:
             messagebox.showerror("Copy SVG", f"Failed to copy SVG:\n{e}")
 
