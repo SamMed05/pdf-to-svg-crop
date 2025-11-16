@@ -21,6 +21,8 @@ class PdfToSvgCropper(tk.Tk):
         self.pdf_path = None
         self.page_index = 0
         self.scale = 1.0
+        self.zoom_level = 1.0  # User zoom multiplier
+        self.auto_fit = True  # Whether to auto-fit to window
         self.photo = None  # keep reference
         self.selection_rect_id = None
         self.sel_start = None
@@ -99,6 +101,12 @@ class PdfToSvgCropper(tk.Tk):
         self.canvas.bind("<Button-1>", self._on_mouse_down)
         self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
+        
+        # Mouse wheel zoom (Ctrl + scroll)
+        self.canvas.bind("<Control-MouseWheel>", self._on_zoom)
+        # For Linux
+        self.canvas.bind("<Control-Button-4>", self._on_zoom)
+        self.canvas.bind("<Control-Button-5>", self._on_zoom)
 
     # -------------------- PDF handling --------------------
     def _load_recent_files(self):
@@ -288,11 +296,21 @@ class PdfToSvgCropper(tk.Tk):
             self.after(50, self._render_current_page)
             return
 
-        # fit to width with some padding
-        padding = 16
-        target_w = max(c_w - padding * 2, 100)
-        self.scale = target_w / page_rect.width
-        target_h = int(page_rect.height * self.scale)
+        # Calculate base scale
+        if self.auto_fit:
+            # fit to width with some padding
+            padding = 16
+            target_w = max(c_w - padding * 2, 100)
+            base_scale = target_w / page_rect.width
+        else:
+            # Use previous base scale or default
+            base_scale = getattr(self, 'base_scale', 1.0)
+        
+        # Store base scale for when auto_fit is disabled
+        self.base_scale = base_scale
+        
+        # Apply user zoom
+        self.scale = base_scale * self.zoom_level
 
         mat = fitz.Matrix(self.scale, self.scale)
         pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -315,6 +333,29 @@ class PdfToSvgCropper(tk.Tk):
         self._clear_selection()
 
     # -------------------- Selection handling --------------------
+    def _on_zoom(self, event):
+        """Handle Ctrl+scroll wheel zoom"""
+        if not self.doc:
+            return
+        
+        # Determine zoom direction
+        if event.num == 4 or event.delta > 0:  # Scroll up / zoom in
+            zoom_factor = 1.1
+        elif event.num == 5 or event.delta < 0:  # Scroll down / zoom out
+            zoom_factor = 0.9
+        else:
+            return
+        
+        # Update zoom level
+        new_zoom = self.zoom_level * zoom_factor
+        # Clamp zoom level between 0.1x and 10x
+        new_zoom = max(0.1, min(10.0, new_zoom))
+        
+        if new_zoom != self.zoom_level:
+            self.zoom_level = new_zoom
+            self.auto_fit = False  # Disable auto-fit when user zooms
+            self._render_current_page()
+    
     def _on_mouse_down(self, event):
         if not self.doc or not hasattr(self, "img_origin"):
             return
