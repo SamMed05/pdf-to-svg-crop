@@ -29,6 +29,8 @@ class PdfToSvgCropper(tk.Tk):
         self.recent_files = self._load_recent_files()
         self.preserve_text = tk.BooleanVar(value=True)
         self.remove_kerning = tk.BooleanVar(value=False)
+        self.remove_background = tk.BooleanVar(value=False)
+        self.convert_grayscale = tk.BooleanVar(value=False)
 
         # UI
         self._build_ui()
@@ -65,6 +67,12 @@ class PdfToSvgCropper(tk.Tk):
 
         self.kern_check = tk.Checkbutton(top, text="Remove manual kerns", variable=self.remove_kerning)
         self.kern_check.pack(side=tk.LEFT, padx=4)
+
+        self.bg_check = tk.Checkbutton(top, text="Remove background", variable=self.remove_background)
+        self.bg_check.pack(side=tk.LEFT, padx=4)
+
+        self.gray_check = tk.Checkbutton(top, text="Grayscale", variable=self.convert_grayscale)
+        self.gray_check.pack(side=tk.LEFT, padx=4)
 
         btn_export = tk.Button(top, text="Export Selection as SVG…", command=self.export_selection_as_svg)
         btn_export.pack(side=tk.LEFT, padx=4)
@@ -351,6 +359,14 @@ class PdfToSvgCropper(tk.Tk):
         if self.preserve_text.get() and self.remove_kerning.get():
             svg = self._remove_svg_kerning(svg)
         
+        # Remove background if requested
+        if self.remove_background.get():
+            svg = self._remove_svg_background(svg)
+        
+        # Convert to grayscale if requested
+        if self.convert_grayscale.get():
+            svg = self._convert_svg_grayscale(svg)
+        
         out.close()
         return svg
 
@@ -386,6 +402,64 @@ class PdfToSvgCropper(tk.Tk):
         # Pattern to match text elements with coordinate arrays
         pattern = r'<text[^>]*x="[^"]*\s[^"]*"[^>]*y="[^"]*"[^>]*>[^<]+</text>'
         svg = re.sub(pattern, merge_text_spans, svg)
+        
+        return svg
+
+    def _remove_svg_background(self, svg):
+        """Remove white/background rectangles and paths from SVG"""
+        import re
+        lines = svg.split('\n')
+        filtered_lines = []
+        
+        for line in lines:
+            # Skip white/light colored backgrounds
+            is_white = ('fill="#ffffff"' in line or 'fill="#fff"' in line or 
+                       'fill="rgb(255,255,255)"' in line or 'fill="white"' in line)
+            
+            if is_white:
+                # Skip rect elements that are backgrounds
+                if '<rect' in line and ('x="0"' in line or 'y="0"' in line):
+                    continue
+                # Skip path elements that are large backgrounds (typically have large dimensions in the d attribute)
+                if '<path' in line:
+                    # Check if it's a large rectangular path (H and V commands with large values)
+                    if re.search(r'[HV]\s*\d{3,}', line):  # H or V with 3+ digit numbers
+                        continue
+            
+            filtered_lines.append(line)
+        
+        return '\n'.join(filtered_lines)
+
+    def _convert_svg_grayscale(self, svg):
+        """Convert all colors in SVG to grayscale"""
+        import re
+        
+        def rgb_to_gray(match):
+            rgb_str = match.group(1)
+            values = rgb_str.split(',')
+            if len(values) == 3:
+                r, g, b = [int(v.strip()) for v in values]
+                # Standard grayscale conversion formula
+                gray = int(0.299 * r + 0.587 * g + 0.114 * b)
+                return f'rgb({gray},{gray},{gray})'
+            return match.group(0)
+        
+        # Convert rgb() colors
+        svg = re.sub(r'rgb\(([^)]+)\)', rgb_to_gray, svg)
+        
+        # Convert hex colors
+        def hex_to_gray(match):
+            hex_color = match.group(1)
+            if len(hex_color) == 6:
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                gray = int(0.299 * r + 0.587 * g + 0.114 * b)
+                gray_hex = f'{gray:02x}'
+                return f'#{gray_hex}{gray_hex}{gray_hex}'
+            return match.group(0)
+        
+        svg = re.sub(r'#([0-9a-fA-F]{6})', hex_to_gray, svg)
         
         return svg
 
