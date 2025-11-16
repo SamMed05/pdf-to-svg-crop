@@ -49,6 +49,13 @@ class PdfToSvgCropper(tk.Tk):
         btn_recent = ttk.Button(top, text="Open Recent", command=self.open_recent)
         btn_recent.pack(side=tk.LEFT, padx=2, pady=4)
 
+        ttk.Label(top, text="URL:").pack(side=tk.LEFT, padx=(12, 2))
+        self.url_entry = ttk.Entry(top, width=30)
+        self.url_entry.pack(side=tk.LEFT, padx=2)
+        self.url_entry.bind("<Return>", lambda e: self.open_from_url())
+        btn_open_url = ttk.Button(top, text="Open", command=self.open_from_url)
+        btn_open_url.pack(side=tk.LEFT, padx=2)
+
         ttk.Label(top, text="Page:").pack(side=tk.LEFT, padx=(12, 2))
         self.page_entry = ttk.Entry(top, width=5)
         self.page_entry.pack(side=tk.LEFT, padx=2)
@@ -158,6 +165,69 @@ class PdfToSvgCropper(tk.Tk):
             menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
         finally:
             menu.grab_release()
+
+    def open_from_url(self):
+        """Open PDF from URL or file:// link"""
+        from urllib.parse import urlparse, unquote, parse_qs
+        import tempfile
+        import urllib.request
+        
+        url = self.url_entry.get().strip()
+        if not url:
+            return
+        
+        try:
+            parsed = urlparse(url)
+            target_page = None
+            
+            # Extract page number from fragment (#page=123)
+            if parsed.fragment:
+                if parsed.fragment.startswith('page='):
+                    try:
+                        target_page = int(parsed.fragment.split('=')[1]) - 1  # Convert to 0-indexed
+                    except (ValueError, IndexError):
+                        pass
+            
+            # Handle file:// URLs
+            if parsed.scheme == 'file':
+                # Decode percent-encoded path
+                file_path = unquote(parsed.path)
+                # On Windows, remove leading slash from /C:/path
+                if os.name == 'nt' and file_path.startswith('/') and len(file_path) > 2 and file_path[2] == ':':
+                    file_path = file_path[1:]
+                
+                if not Path(file_path).exists():
+                    messagebox.showerror("Error", f"File not found: {file_path}")
+                    return
+                
+                self.open_pdf(file_path)
+            
+            # Handle http:// and https:// URLs
+            elif parsed.scheme in ('http', 'https'):
+                # Download to temporary file
+                with urllib.request.urlopen(url.split('#')[0]) as response:
+                    pdf_data = response.read()
+                
+                # Save to temp file
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+                temp_file.write(pdf_data)
+                temp_file.close()
+                
+                self.open_pdf(temp_file.name)
+            
+            else:
+                messagebox.showerror("Error", f"Unsupported URL scheme: {parsed.scheme}")
+                return
+            
+            # Jump to page if specified in fragment
+            if target_page is not None and self.doc:
+                if 0 <= target_page < self.doc.page_count:
+                    self.page_index = target_page
+                    self._update_page_label()
+                    self._render_current_page()
+        
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open from URL:\n{e}")
 
     def _update_page_label(self):
         if self.doc:
