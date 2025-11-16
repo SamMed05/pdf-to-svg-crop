@@ -3,7 +3,7 @@ import json
 import os
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -40,44 +40,48 @@ class PdfToSvgCropper(tk.Tk):
 
     def _build_ui(self):
         # Top controls
-        top = tk.Frame(self)
+        top = ttk.Frame(self, padding="4")
         top.pack(side=tk.TOP, fill=tk.X)
 
-        btn_open = tk.Button(top, text="Open PDF", command=self.open_pdf)
+        btn_open = ttk.Button(top, text="Open PDF", command=self.open_pdf)
         btn_open.pack(side=tk.LEFT, padx=4, pady=4)
 
-        btn_recent = tk.Button(top, text="Open Recent", command=self.open_recent)
+        btn_recent = ttk.Button(top, text="Open Recent", command=self.open_recent)
         btn_recent.pack(side=tk.LEFT, padx=2, pady=4)
 
-        tk.Label(top, text="Page:").pack(side=tk.LEFT, padx=(12, 2))
-        self.page_entry = tk.Entry(top, width=5)
+        ttk.Label(top, text="Page:").pack(side=tk.LEFT, padx=(12, 2))
+        self.page_entry = ttk.Entry(top, width=5)
         self.page_entry.pack(side=tk.LEFT, padx=2)
         self.page_entry.bind("<Return>", lambda e: self.goto_page())
-        self.page_label = tk.Label(top, text="/-")
+        self.page_label = ttk.Label(top, text="/-")
         self.page_label.pack(side=tk.LEFT, padx=0)
 
-        btn_prev = tk.Button(top, text="Prev", command=self.prev_page)
+        btn_prev = ttk.Button(top, text="<", command=self.prev_page, width=2)
         btn_prev.pack(side=tk.LEFT, padx=(8, 2))
 
-        btn_next = tk.Button(top, text="Next", command=self.next_page)
+        btn_next = ttk.Button(top, text=">", command=self.next_page, width=2)
         btn_next.pack(side=tk.LEFT, padx=2)
 
-        self.text_check = tk.Checkbutton(top, text="Preserve text", variable=self.preserve_text)
-        self.text_check.pack(side=tk.LEFT, padx=(12, 4))
+        ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
 
-        self.kern_check = tk.Checkbutton(top, text="Remove manual kerns", variable=self.remove_kerning)
+        self.text_check = ttk.Checkbutton(top, text="Preserve text", variable=self.preserve_text)
+        self.text_check.pack(side=tk.LEFT, padx=4)
+
+        self.kern_check = ttk.Checkbutton(top, text="Remove manual kerns", variable=self.remove_kerning)
         self.kern_check.pack(side=tk.LEFT, padx=4)
 
-        self.bg_check = tk.Checkbutton(top, text="Remove background", variable=self.remove_background)
+        self.bg_check = ttk.Checkbutton(top, text="Remove background", variable=self.remove_background)
         self.bg_check.pack(side=tk.LEFT, padx=4)
 
-        self.gray_check = tk.Checkbutton(top, text="Grayscale", variable=self.convert_grayscale)
+        self.gray_check = ttk.Checkbutton(top, text="Grayscale", variable=self.convert_grayscale)
         self.gray_check.pack(side=tk.LEFT, padx=4)
 
-        btn_export = tk.Button(top, text="Export Selection as SVG…", command=self.export_selection_as_svg)
+        ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+
+        btn_export = ttk.Button(top, text="Export Selection as SVG…", command=self.export_selection_as_svg)
         btn_export.pack(side=tk.LEFT, padx=4)
 
-        btn_copy = tk.Button(top, text="Copy SVG to Clipboard", command=self.copy_svg_to_clipboard)
+        btn_copy = ttk.Button(top, text="Copy SVG to Clipboard", command=self.copy_svg_to_clipboard)
         btn_copy.pack(side=tk.LEFT, padx=2)
 
         # Canvas for page preview
