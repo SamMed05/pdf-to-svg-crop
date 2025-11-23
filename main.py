@@ -35,6 +35,7 @@ class PdfToSvgCropper(tk.Tk):
         self.remove_kerning = tk.BooleanVar(value=False)
         self.remove_background = tk.BooleanVar(value=False)
         self.convert_grayscale = tk.BooleanVar(value=False)
+        self.font_handling = tk.StringVar(value="keep")
 
         # UI
         self._build_ui()
@@ -98,6 +99,12 @@ class PdfToSvgCropper(tk.Tk):
 
         self.gray_check = ttk.Checkbutton(top, text="Grayscale", variable=self.convert_grayscale)
         self.gray_check.pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(top, text="Fonts:").pack(side=tk.LEFT, padx=(12, 2))
+        self.font_combo = ttk.Combobox(top, textvariable=self.font_handling, width=12, state="readonly")
+        self.font_combo['values'] = ('Keep original', 'Web-safe fonts')
+        self.font_combo.current(0)
+        self.font_combo.pack(side=tk.LEFT, padx=2)
 
         ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
 
@@ -563,6 +570,12 @@ class PdfToSvgCropper(tk.Tk):
         if self.preserve_text.get() and self.remove_kerning.get():
             svg = self._remove_svg_kerning(svg)
         
+        # Handle fonts if requested
+        if self.preserve_text.get():
+            font_mode = self.font_combo.get()
+            if font_mode == 'Web-safe fonts':
+                svg = self._replace_with_websafe_fonts(svg)
+        
         # Remove background if requested
         if self.remove_background.get():
             svg = self._remove_svg_background(svg)
@@ -610,6 +623,47 @@ class PdfToSvgCropper(tk.Tk):
         
         svg = re.sub(text_pattern, merge_coords, svg, flags=re.DOTALL)
         svg = re.sub(tspan_pattern, merge_coords, svg, flags=re.DOTALL)
+        
+        return svg
+
+    def _replace_with_websafe_fonts(self, svg):
+        """Replace fonts with web-safe alternatives"""
+        import re
+        
+        # Mapping of common fonts to web-safe equivalents
+        font_mapping = {
+            # Serif fonts
+            'Calibri': 'Arial, Helvetica, sans-serif',
+            'Cambria': 'Georgia, serif',
+            'Times': 'Times New Roman, serif',
+            'Palatino': 'Palatino Linotype, Georgia, serif',
+            'Garamond': 'Georgia, serif',
+            'Bookman': 'Georgia, serif',
+            
+            # Sans-serif fonts
+            'Segoe UI': 'Arial, Helvetica, sans-serif',
+            'Tahoma': 'Verdana, Geneva, sans-serif',
+            'Trebuchet': 'Trebuchet MS, sans-serif',
+            'Lucida': 'Lucida Grande, Lucida Sans, sans-serif',
+            'Helvetica Neue': 'Helvetica, Arial, sans-serif',
+            'Roboto': 'Arial, Helvetica, sans-serif',
+            
+            # Monospace fonts
+            'Consolas': 'Courier New, Courier, monospace',
+            'Monaco': 'Courier New, Courier, monospace',
+            'Menlo': 'Courier New, Courier, monospace',
+        }
+        
+        def replace_font(match):
+            font_family = match.group(1)
+            # Check if font needs replacement
+            for original, websafe in font_mapping.items():
+                if original.lower() in font_family.lower():
+                    return f'font-family="{websafe}"'
+            return match.group(0)  # Keep original if no mapping
+        
+        # Replace font-family attributes
+        svg = re.sub(r'font-family="([^"]+)"', replace_font, svg)
         
         return svg
 
