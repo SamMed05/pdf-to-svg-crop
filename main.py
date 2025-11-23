@@ -577,35 +577,39 @@ class PdfToSvgCropper(tk.Tk):
     def _remove_svg_kerning(self, svg):
         """Remove individual character positioning from SVG text elements"""
         import re
-        # Find text elements with x/y arrays (manual positioning)
-        # Merge characters into single text element at starting position
-        def merge_text_spans(match):
+        
+        # SVG kerning can appear in both <text> and <tspan> elements as coordinate arrays:
+        # <text x="10 20 30" y="50">ABC</text>
+        # <tspan x="10 20 30" y="50">ABC</tspan>
+        # Keep only the first x/y coordinate to remove manual kerning
+        
+        def merge_coords(match):
             full_tag = match.group(0)
-            # Extract x and y arrays
+            
+            # Extract x and y attributes
             x_match = re.search(r'x="([^"]+)"', full_tag)
             y_match = re.search(r'y="([^"]+)"', full_tag)
-            # Extract text content
-            text_match = re.search(r'>([^<]+)<', full_tag)
             
-            if x_match and y_match and text_match:
+            if x_match:
                 x_vals = x_match.group(1).split()
+                if len(x_vals) > 1:  # Has coordinate array
+                    # Keep only first x coordinate
+                    full_tag = re.sub(r'x="[^"]+"', f'x="{x_vals[0]}"', full_tag)
+            
+            if y_match:
                 y_vals = y_match.group(1).split()
-                text = text_match.group(1)
-                
-                # Use first position only, remove individual char positioning
-                if len(x_vals) > 0 and len(y_vals) > 0:
-                    first_x = x_vals[0]
-                    first_y = y_vals[0]
-                    # Rebuild text element with single position
-                    new_tag = re.sub(r'x="[^"]+"', f'x="{first_x}"', full_tag)
-                    new_tag = re.sub(r'y="[^"]+"', f'y="{first_y}"', new_tag)
-                    return new_tag
+                if len(y_vals) > 1:  # Has coordinate array
+                    # Keep only first y coordinate
+                    full_tag = re.sub(r'y="[^"]+"', f'y="{y_vals[0]}"', full_tag)
             
             return full_tag
         
-        # Pattern to match text elements with coordinate arrays
-        pattern = r'<text[^>]*x="[^"]*\s[^"]*"[^>]*y="[^"]*"[^>]*>[^<]+</text>'
-        svg = re.sub(pattern, merge_text_spans, svg)
+        # Match both <text> and <tspan> elements with space-separated coordinates
+        text_pattern = r'<text[^>]*(?:x|y)="[^"]*\s[^"]*"[^>]*>.*?</text>'
+        tspan_pattern = r'<tspan[^>]*(?:x|y)="[^"]*\s[^"]*"[^>]*>.*?</tspan>'
+        
+        svg = re.sub(text_pattern, merge_coords, svg, flags=re.DOTALL)
+        svg = re.sub(tspan_pattern, merge_coords, svg, flags=re.DOTALL)
         
         return svg
 
