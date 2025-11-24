@@ -66,6 +66,10 @@ class PdfToSvgCropper(tk.Tk):
         btn_recent.pack(side=tk.LEFT, padx=2, pady=4)
         self._create_tooltip(btn_recent, "Open Recent")
 
+        btn_svg_editor = ttk.Button(top, text="📝", command=self.open_svg_editor, style='Icon.TButton', width=2.9)
+        btn_svg_editor.pack(side=tk.LEFT, padx=2, pady=4)
+        self._create_tooltip(btn_svg_editor, "SVG Editor")
+
         ttk.Label(top, text="URL:").pack(side=tk.LEFT, padx=(12, 2))
         self.url_entry = ttk.Entry(top, width=25)
         self.url_entry.pack(side=tk.LEFT, padx=2)
@@ -283,6 +287,270 @@ class PdfToSvgCropper(tk.Tk):
         
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open from URL:\n{e}")
+
+    def open_svg_editor(self):
+        """Open SVG editor dialog for manual SVG input"""
+        editor_window = tk.Toplevel(self)
+        editor_window.title("SVG Editor")
+        editor_window.geometry("900x700")
+        
+        # Create main frame
+        main_frame = ttk.Frame(editor_window, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Top controls
+        controls_frame = ttk.Frame(main_frame)
+        controls_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Label(controls_frame, text="Paste SVG code below, adjust settings in main window, then click Process:").pack(side=tk.LEFT)
+        
+        btn_process = ttk.Button(controls_frame, text="Process & Preview", 
+                                command=lambda: self._process_svg_input(text_input, preview_canvas, editor_window, bg_var))
+        btn_process.pack(side=tk.RIGHT, padx=5)
+        
+        btn_export = ttk.Button(controls_frame, text="💾 Export", 
+                               command=lambda: self._export_processed_svg(editor_window))
+        btn_export.pack(side=tk.RIGHT, padx=5)
+        
+        btn_copy = ttk.Button(controls_frame, text="📋 Copy", 
+                             command=lambda: self._copy_processed_svg(editor_window))
+        btn_copy.pack(side=tk.RIGHT, padx=5)
+        
+        # Options summary frame
+        options_frame = ttk.Frame(main_frame)
+        options_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Show active processing options from main window
+        ttk.Label(options_frame, text="Active options:", font=('', 9, 'bold')).pack(side=tk.LEFT, padx=(0, 5))
+        
+        options_text = self._get_active_options_text()
+        options_label = ttk.Label(options_frame, text=options_text, font=('', 9), foreground="#0066cc")
+        options_label.pack(side=tk.LEFT)
+        
+        # Store reference to update options label
+        editor_window.options_label = options_label
+        
+        # Preview background selector (pack in reverse order for right alignment)
+        bg_var = tk.StringVar(value="Checkerboard")
+        bg_combo = ttk.Combobox(options_frame, textvariable=bg_var, width=12, state="readonly")
+        bg_combo['values'] = ('White', 'Dark gray', 'Checkerboard')
+        bg_combo.current(2)
+        bg_combo.pack(side=tk.RIGHT)
+        ttk.Label(options_frame, text="Preview bg:").pack(side=tk.RIGHT, padx=(10, 5))
+        bg_combo.bind('<<ComboboxSelected>>', 
+                     lambda e: self._update_preview_background(preview_canvas, bg_var.get()))
+        
+        # Create paned window for input/preview
+        paned = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+        
+        # Left side: SVG input
+        left_frame = ttk.Frame(paned)
+        paned.add(left_frame, weight=1)
+        
+        ttk.Label(left_frame, text="Input SVG:").pack(anchor=tk.W)
+        
+        text_input = tk.Text(left_frame, wrap=tk.NONE, font=('Consolas', 10))
+        text_input.pack(fill=tk.BOTH, expand=True)
+        
+        # Add scrollbars
+        v_scroll = ttk.Scrollbar(text_input, orient=tk.VERTICAL, command=text_input.yview)
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        text_input.config(yscrollcommand=v_scroll.set)
+        
+        h_scroll = ttk.Scrollbar(left_frame, orient=tk.HORIZONTAL, command=text_input.xview)
+        h_scroll.pack(fill=tk.X)
+        text_input.config(xscrollcommand=h_scroll.set)
+        
+        # Right side: Preview
+        right_frame = ttk.Frame(paned)
+        paned.add(right_frame, weight=1)
+        
+        ttk.Label(right_frame, text="Preview:").pack(anchor=tk.W)
+        
+        preview_canvas = tk.Canvas(right_frame, bg="white")
+        preview_canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Store reference to processed SVG and background
+        editor_window.processed_svg = None
+        
+        # Bind Ctrl+Enter to process
+        text_input.bind('<Control-Return>', 
+                       lambda e: self._process_svg_input(text_input, preview_canvas, editor_window, bg_var))
+    
+    def _get_active_options_text(self):
+        """Get text description of active processing options"""
+        options = []
+        if self.remove_kerning.get():
+            options.append("Remove kerns")
+        if self.remove_background.get():
+            options.append("Remove bg")
+        if self.convert_grayscale.get():
+            options.append("Grayscale")
+        if self.preserve_text.get():
+            font_mode = self.font_combo.get()
+            if font_mode == 'Web-safe fonts':
+                options.append("Web-safe fonts")
+            else:
+                options.append("Keep fonts")
+        
+        return ", ".join(options) if options else "None"
+    
+    def _process_svg_input(self, text_widget, canvas, window, bg_var):
+        """Process SVG from text input and display preview"""
+        # Update active options display
+        if hasattr(window, 'options_label'):
+            window.options_label.config(text=self._get_active_options_text())
+        
+        svg_code = text_widget.get("1.0", tk.END).strip()
+        
+        if not svg_code:
+            messagebox.showwarning("Empty Input", "Please paste SVG code first")
+            return
+        
+        try:
+            # Apply same processing as PDF export
+            processed_svg = svg_code
+            
+            # Apply kerning removal if enabled
+            if self.remove_kerning.get():
+                processed_svg = self._remove_svg_kerning(processed_svg)
+            
+            # Apply background removal if enabled
+            if self.remove_background.get():
+                processed_svg = self._remove_svg_background(processed_svg)
+            
+            # Apply grayscale if enabled
+            if self.convert_grayscale.get():
+                processed_svg = self._convert_svg_grayscale(processed_svg)
+            
+            # Apply font handling
+            if self.preserve_text.get():
+                font_mode = self.font_combo.get()
+                if font_mode == 'Web-safe fonts':
+                    processed_svg = self._replace_with_websafe_fonts(processed_svg)
+            
+            # Store processed SVG
+            window.processed_svg = processed_svg
+            
+            # Render preview
+            self._render_svg_preview(processed_svg, canvas, bg_var.get())
+            
+            self._set_status("✓ SVG processed successfully")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to process SVG:\n{e}")
+            self._set_status(f"✗ Error processing SVG")
+    
+    def _render_svg_preview(self, svg_code, canvas, background="white"):
+        """Render SVG as preview in canvas with specified background"""
+        try:
+            from io import BytesIO
+            import cairosvg
+            from PIL import Image, ImageTk
+            
+            # Convert SVG to PNG with transparency
+            png_data = cairosvg.svg2png(bytestring=svg_code.encode('utf-8'))
+            
+            # Load as PIL Image
+            img = Image.open(BytesIO(png_data)).convert('RGBA')
+            
+            # Resize to fit canvas
+            canvas_width = canvas.winfo_width()
+            canvas_height = canvas.winfo_height()
+            
+            if canvas_width > 1 and canvas_height > 1:
+                img.thumbnail((canvas_width - 20, canvas_height - 20), Image.Resampling.LANCZOS)
+            
+            # Create background based on selection
+            bg_img = Image.new('RGBA', img.size)
+            
+            if background.lower() == 'white':
+                bg_img.paste((255, 255, 255, 255), (0, 0, img.size[0], img.size[1]))
+            elif background.lower() == 'dark gray':
+                bg_img.paste((60, 60, 60, 255), (0, 0, img.size[0], img.size[1]))
+            elif background.lower() == 'checkerboard':
+                # Create checkerboard pattern
+                checker_size = 10
+                for y in range(0, img.size[1], checker_size):
+                    for x in range(0, img.size[0], checker_size):
+                        color = (220, 220, 220, 255) if (x // checker_size + y // checker_size) % 2 == 0 else (255, 255, 255, 255)
+                        bg_img.paste(color, (x, y, min(x + checker_size, img.size[0]), min(y + checker_size, img.size[1])))
+            
+            # Composite SVG over background
+            bg_img.paste(img, (0, 0), img)
+            
+            # Convert to PhotoImage
+            photo = ImageTk.PhotoImage(bg_img)
+            
+            # Update canvas background color
+            if background.lower() == 'white':
+                canvas.config(bg='#f0f0f0')
+            elif background.lower() == 'dark gray':
+                canvas.config(bg='#2b2b2b')
+            else:
+                canvas.config(bg='#cccccc')
+            
+            # Clear canvas and display
+            canvas.delete("all")
+            canvas.create_image(canvas_width // 2, canvas_height // 2, image=photo, anchor=tk.CENTER)
+            
+            # Keep reference
+            canvas.image = photo
+            
+        except ImportError:
+            # Fallback if cairosvg not available - just show text
+            canvas.delete("all")
+            canvas.create_text(canvas.winfo_width() // 2, canvas.winfo_height() // 2,
+                             text="Preview requires 'cairosvg' package\n\npip install cairosvg",
+                             justify=tk.CENTER, fill="gray")
+        except Exception as e:
+            canvas.delete("all")
+            canvas.create_text(canvas.winfo_width() // 2, canvas.winfo_height() // 2,
+                             text=f"Preview error:\n{str(e)[:100]}",
+                             justify=tk.CENTER, fill="red")
+    
+    def _update_preview_background(self, canvas, background):
+        """Update preview background when user changes selection"""
+        # Re-render if we have processed SVG
+        if hasattr(canvas, 'image') and canvas.image:
+            # Find the window that owns this canvas
+            window = canvas.winfo_toplevel()
+            if hasattr(window, 'processed_svg') and window.processed_svg:
+                self._render_svg_preview(window.processed_svg, canvas, background)
+    
+    def _export_processed_svg(self, window):
+        """Export processed SVG to file"""
+        if not hasattr(window, 'processed_svg') or not window.processed_svg:
+            messagebox.showwarning("No SVG", "Please process SVG first")
+            return
+        
+        path = filedialog.asksaveasfilename(
+            title="Save SVG",
+            defaultextension=".svg",
+            filetypes=[("SVG files", "*.svg"), ("All files", "*.*")],
+        )
+        
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(window.processed_svg)
+                self._set_status(f"✓ Saved to {Path(path).name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save:\n{e}")
+    
+    def _copy_processed_svg(self, window):
+        """Copy processed SVG to clipboard"""
+        if not hasattr(window, 'processed_svg') or not window.processed_svg:
+            messagebox.showwarning("No SVG", "Please process SVG first")
+            return
+        
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(window.processed_svg)
+            self._set_status("✓ SVG copied to clipboard")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to copy:\n{e}")
 
     def _update_page_label(self):
         if self.doc:
