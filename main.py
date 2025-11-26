@@ -920,6 +920,12 @@ class PdfToSvgCropper(tk.Tk):
             'Consolas': 'Courier New, Courier, monospace',
             'Monaco': 'Courier New, Courier, monospace',
             'Menlo': 'Courier New, Courier, monospace',
+            
+            # Generic PDF font IDs (like F1, F2) -> sane defaults
+            'F1': 'Arial, Helvetica, sans-serif',
+            'F2': 'Arial, Helvetica, sans-serif',
+            'F3': 'Times New Roman, serif',
+            'F4': 'Courier New, Courier, monospace',
         }
         
         def replace_font(match):
@@ -930,8 +936,19 @@ class PdfToSvgCropper(tk.Tk):
                     return f'font-family="{websafe}"'
             return match.group(0)  # Keep original if no mapping
         
-        # Replace font-family attributes
+        # Replace font-family attributes on elements
         svg = re.sub(r'font-family="([^"]+)"', replace_font, svg)
+
+        # Also update any CSS font-family declarations inside <style> blocks
+        # e.g., font-family:F1; or font-family:"F1";
+        def replace_css_font(match):
+            font_family = match.group(1)
+            for original, websafe in font_mapping.items():
+                if original.lower() in font_family.lower():
+                    return f'font-family:{websafe};'
+            return match.group(0)
+
+        svg = re.sub(r'font-family:([^;]+);', replace_css_font, svg)
         
         return svg
 
