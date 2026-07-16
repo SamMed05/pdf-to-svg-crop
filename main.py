@@ -807,7 +807,10 @@ class PdfToSvgCropper(tk.Tk):
     # -------------------- SVG export --------------------
     def _selection_pdf_rect(self):
         sel = self._get_selection_rect_image_coords()
-        if not sel or not self.doc:
+        if not sel:
+            # If no active selection, return the full page rectangle
+            if self.doc:
+                return self.doc[self.page_index].rect
             return None
         x0, y0, x1, y1 = sel
         # map image px to PDF points
@@ -823,7 +826,8 @@ class PdfToSvgCropper(tk.Tk):
             raise RuntimeError("No PDF open")
         clip_rect = self._selection_pdf_rect()
         if not clip_rect:
-            raise RuntimeError("No valid selection to export")
+            page = self.doc.load_page(self.page_index)
+            clip_rect = page.rect
         if clip_rect.width <= 0 or clip_rect.height <= 0:
             raise RuntimeError("Selection has zero size")
 
@@ -1243,6 +1247,10 @@ class PdfToSvgCropper(tk.Tk):
         return svg
 
     def export_selection_as_svg(self):
+        # Check if there is a selection to inform the user
+        sel = self._get_selection_rect_image_coords()
+        if not sel:
+            messagebox.showinfo("Exporting Full Page", "No selection found. Exporting the entire page.")
         try:
             svg = self._svg_from_selection()
         except Exception as e:
