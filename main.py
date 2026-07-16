@@ -58,15 +58,15 @@ class PdfToSvgCropper(tk.Tk):
         style = ttk.Style()
         style.configure('Icon.TButton', font=('Segoe UI Emoji', 14))
 
-        btn_open = ttk.Button(top, text="📁", command=self.open_pdf, style='Icon.TButton', width=2.9)
+        btn_open = ttk.Button(top, text="📁", command=self.open_pdf, style='Icon.TButton', width=3)
         btn_open.pack(side=tk.LEFT, padx=4, pady=4)
         self._create_tooltip(btn_open, "Open PDF")
 
-        btn_recent = ttk.Button(top, text="🕒", command=self.open_recent, style='Icon.TButton', width=2.9)
+        btn_recent = ttk.Button(top, text="🕒", command=self.open_recent, style='Icon.TButton', width=3)
         btn_recent.pack(side=tk.LEFT, padx=2, pady=4)
         self._create_tooltip(btn_recent, "Open Recent")
 
-        btn_svg_editor = ttk.Button(top, text="📝", command=self.open_svg_editor, style='Icon.TButton', width=2.9)
+        btn_svg_editor = ttk.Button(top, text="📝", command=self.open_svg_editor, style='Icon.TButton', width=3)
         btn_svg_editor.pack(side=tk.LEFT, padx=2, pady=4)
         self._create_tooltip(btn_svg_editor, "SVG Editor")
 
@@ -112,11 +112,11 @@ class PdfToSvgCropper(tk.Tk):
 
         ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
 
-        btn_export = ttk.Button(top, text="💾", command=self.export_selection_as_svg, style='Icon.TButton', width=2.9)
+        btn_export = ttk.Button(top, text="💾", command=self.export_selection_as_svg, style='Icon.TButton', width=3)
         btn_export.pack(side=tk.LEFT, padx=4)
         self._create_tooltip(btn_export, "Export Selection as SVG")
 
-        btn_copy = ttk.Button(top, text="📋", command=self.copy_svg_to_clipboard, style='Icon.TButton', width=2.9)
+        btn_copy = ttk.Button(top, text="📋", command=self.copy_svg_to_clipboard, style='Icon.TButton', width=3)
         btn_copy.pack(side=tk.LEFT, padx=2)
         self._create_tooltip(btn_copy, "Copy SVG to Clipboard")
 
@@ -895,60 +895,101 @@ class PdfToSvgCropper(tk.Tk):
         return svg
 
     def _replace_with_websafe_fonts(self, svg):
-        """Replace fonts with web-safe alternatives"""
+        """Replace fonts with web-safe alternatives, handling attributes and CSS declarations."""
         import re
+        from urllib.parse import unquote
         
-        # Mapping of common fonts to web-safe equivalents
+        # Mapping of common fonts/keywords to web-safe equivalents
         font_mapping = {
-            # Serif fonts
-            'Calibri': 'Arial, Helvetica, sans-serif',
-            'Cambria': 'Georgia, serif',
-            'Times': 'Times New Roman, serif',
-            'Palatino': 'Palatino Linotype, Georgia, serif',
-            'Garamond': 'Georgia, serif',
-            'Bookman': 'Georgia, serif',
-            
             # Sans-serif fonts
-            'Segoe UI': 'Arial, Helvetica, sans-serif',
-            'Tahoma': 'Verdana, Geneva, sans-serif',
-            'Trebuchet': 'Trebuchet MS, sans-serif',
-            'Lucida': 'Lucida Grande, Lucida Sans, sans-serif',
-            'Helvetica Neue': 'Helvetica, Arial, sans-serif',
-            'Roboto': 'Arial, Helvetica, sans-serif',
+            'calibri': 'Arial, Helvetica, sans-serif',
+            'segoe': 'Arial, Helvetica, sans-serif',
+            'tahoma': 'Verdana, Geneva, sans-serif',
+            'trebuchet': 'Trebuchet MS, sans-serif',
+            'lucida': 'Lucida Grande, Lucida Sans, sans-serif',
+            'helvetica': 'Helvetica, Arial, sans-serif',
+            'roboto': 'Arial, Helvetica, sans-serif',
+            'arial': 'Arial, Helvetica, sans-serif',
+            'verdana': 'Verdana, Geneva, sans-serif',
+            'geneva': 'Verdana, Geneva, sans-serif',
+            'sans-serif': 'Arial, Helvetica, sans-serif',
+            
+            # Serif fonts
+            'cambria': 'Georgia, serif',
+            'times': 'Times New Roman, Times, Georgia, serif',
+            'palatino': 'Palatino Linotype, Georgia, serif',
+            'garamond': 'Georgia, serif',
+            'bookman': 'Georgia, serif',
+            'georgia': 'Georgia, serif',
+            'roman': 'Times New Roman, Times, Georgia, serif',
+            'serif': 'Times New Roman, Times, Georgia, serif',
             
             # Monospace fonts
-            'Consolas': 'Courier New, Courier, monospace',
-            'Monaco': 'Courier New, Courier, monospace',
-            'Menlo': 'Courier New, Courier, monospace',
-            
-            # Generic PDF font IDs (like F1, F2) -> sane defaults
-            'F1': 'Arial, Helvetica, sans-serif',
-            'F2': 'Arial, Helvetica, sans-serif',
-            'F3': 'Times New Roman, serif',
-            'F4': 'Courier New, Courier, monospace',
+            'consolas': 'Courier New, Courier, monospace',
+            'monaco': 'Courier New, Courier, monospace',
+            'menlo': 'Courier New, Courier, monospace',
+            'courier': 'Courier New, Courier, monospace',
+            'monospace': 'Courier New, Courier, monospace',
         }
         
-        def replace_font(match):
-            font_family = match.group(1)
-            # Check if font needs replacement
-            for original, websafe in font_mapping.items():
-                if original.lower() in font_family.lower():
-                    return f'font-family="{websafe}"'
-            return match.group(0)  # Keep original if no mapping
-        
-        # Replace font-family attributes on elements
-        svg = re.sub(r'font-family="([^"]+)"', replace_font, svg)
+        def get_websafe_replacement(font_family_str):
+            """Find a web-safe font replacement for a given font-family string."""
+            # Decode percent-encoded names (e.g., "%2BCalibri" -> "+Calibri") and split fallbacks
+            parts = [unquote(p.strip("'\" ")).strip() for p in font_family_str.split(',')]
+            
+            for part in parts:
+                # Strip subset prefixes often found in PDFs (e.g., "BCDEEE+Calibri" -> "Calibri")
+                name = part.split('+')[-1].strip()
+                name_lower = name.lower()
+                
+                # Handle generic PDF font IDs (e.g., F1, F2, F12)
+                if name_lower.startswith('f') and name_lower[1:].isdigit():
+                    if name_lower == 'f3':
+                        return 'Times New Roman, Times, Georgia, serif'
+                    elif name_lower == 'f4':
+                        return 'Courier New, Courier, monospace'
+                    else:
+                        return 'Arial, Helvetica, sans-serif'
+                
+                # Match known font keywords
+                for original_lower, websafe in font_mapping.items():
+                    if original_lower in name_lower:
+                        return websafe
+                
+                # Heuristic matching for custom fonts without exact mapping
+                if 'sans' in name_lower or 'gothic' in name_lower or 'screen' in name_lower:
+                    return 'Arial, Helvetica, sans-serif'
+                if 'serif' in name_lower or 'mincho' in name_lower:
+                    return 'Times New Roman, Times, Georgia, serif'
+                if 'mono' in name_lower or 'code' in name_lower or 'console' in name_lower or 'fixed' in name_lower:
+                    return 'Courier New, Courier, monospace'
+                    
+            return None
 
-        # Also update any CSS font-family declarations inside <style> blocks
-        # e.g., font-family:F1; or font-family:"F1";
-        def replace_css_font(match):
-            font_family = match.group(1)
-            for original, websafe in font_mapping.items():
-                if original.lower() in font_family.lower():
-                    return f'font-family:{websafe};'
+        def replace_attribute(match):
+            """Callback for font-family="..." SVG attributes (handles both single and double quotes)."""
+            quote = match.group(1)
+            font_family = match.group(2)
+            replacement = get_websafe_replacement(font_family)
+            if replacement:
+                return f'font-family={quote}{replacement}{quote}'
             return match.group(0)
 
-        svg = re.sub(r'font-family:([^;]+);', replace_css_font, svg)
+        def replace_css_font(match):
+            """Callback for font-family:... CSS rules (safely replaces value and preserves terminator)."""
+            font_family_str = match.group(1).strip()
+            terminator = match.group(2)
+            replacement = get_websafe_replacement(font_family_str)
+            if replacement:
+                return f'font-family:{replacement}{terminator}'
+            return match.group(0)
+
+        # Replace HTML/SVG inline attributes: font-family="FontName" or font-family='FontName'
+        svg = re.sub(r'font-family=(["\'])([^"\']+)\1', replace_attribute, svg)
+
+        # Replace CSS rules inside <style> blocks or style attributes using the corrected pattern
+        css_pattern = r"""font-family\s*:\s*((?:[^;\}'"]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')+)(;?)"""
+        svg = re.sub(css_pattern, replace_css_font, svg)
         
         return svg
 
