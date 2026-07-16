@@ -856,41 +856,112 @@ class PdfToSvgCropper(tk.Tk):
         return svg
 
     def _remove_svg_kerning(self, svg):
-        """Remove individual character positioning from SVG text elements"""
+        """Remove individual character positioning from SVG text elements and restore spaces"""
         import re
+        import html
         
-        # SVG kerning can appear in both <text> and <tspan> elements as coordinate arrays:
-        # <text x="10 20 30" y="50">ABC</text>
-        # <tspan x="10 20 30" y="50">ABC</tspan>
-        # Keep only the first x/y coordinate to remove manual kerning
+        # Relative weights of characters compared to a standard lowercase letter (weight = 1.0)
+        CHAR_WEIGHTS = {
+            'w': 1.4, 'm': 1.4, 'W': 1.6, 'M': 1.6,
+            'i': 0.4, 'l': 0.4, 't': 0.5, 'f': 0.5, 'j': 0.4, 'r': 0.6,
+            'I': 0.4, '1': 0.6, ' ': 0.5,
+            '.': 0.3, ',': 0.3, ';': 0.3, ':': 0.3, '!': 0.3, '|': 0.3,
+            '-': 0.5, '_': 0.6,
+            '(': 0.5, ')': 0.5, '[': 0.5, ']': 0.5, '{': 0.5, '}': 0.5,
+        }
         
+        def get_char_weight(c):
+            if c in CHAR_WEIGHTS:
+                return CHAR_WEIGHTS[c]
+            if c.isupper():
+                return 1.2
+            return 1.0
+
+        def get_token_char(token):
+            if token.startswith('&') and token.endswith(';'):
+                decoded = html.unescape(token)
+                return decoded[0] if decoded else ' '
+            return token
+
         def merge_coords(match):
-            full_tag = match.group(0)
+            attributes = match.group(1)
+            inner_text = match.group(2)
+            tag_name = "tspan" if "tspan" in match.group(0)[:10] else "text"
             
-            # Extract x and y attributes
-            x_match = re.search(r'x="([^"]+)"', full_tag)
-            y_match = re.search(r'y="([^"]+)"', full_tag)
+            x_match = re.search(r'x="([^"]+)"', attributes)
+            y_match = re.search(r'y="([^"]+)"', attributes)
+            
+            new_attributes = attributes
+            new_text = inner_text
             
             if x_match:
-                x_vals = x_match.group(1).split()
-                if len(x_vals) > 1:  # Has coordinate array
-                    # Keep only first x coordinate
-                    full_tag = re.sub(r'x="[^"]+"', f'x="{x_vals[0]}"', full_tag)
+                try:
+                    x_vals = [float(x) for x in x_match.group(1).split()]
+                except ValueError:
+                    x_vals = []
+                    
+                if len(x_vals) > 1:
+                    # Keep only the first x coordinate in attributes
+                    new_attributes = re.sub(r'x="[^"]+"', f'x="{x_vals[0]}"', new_attributes)
+                    
+                    # Tokenize the inner text into individual characters/entities
+                    tokens = re.findall(r'&[a-zA-Z0-9#]+;|.', inner_text, flags=re.DOTALL)
+                    
+                    if len(tokens) == len(x_vals):
+                        # Calculate actual physical gaps
+                        gaps = [x_vals[i] - x_vals[i-1] for i in range(1, len(x_vals))]
+                        
+                        if gaps:
+                            # Calculate normalized gaps based on character weights
+                            normalized_gaps = []
+                            for i in range(len(gaps)):
+                                char = get_token_char(tokens[i])
+                                weight = get_char_weight(char)
+                                # Avoid division by zero
+                                normalized_gaps.append(gaps[i] / max(weight, 0.1))
+                            
+                            # Find the median of the normalized gaps (represents the font's standard step)
+                            median_norm = sorted(normalized_gaps)[len(normalized_gaps) // 2]
+                            
+                            # If a gap exceeds expected width by more than 35% of a standard char,
+                            # we treat it as an intended word space.
+                            space_threshold_ratio = 0.35
+                            
+                            new_tokens = []
+                            for i, token in enumerate(tokens):
+                                new_tokens.append(token)
+                                if i < len(gaps):
+                                    char = get_token_char(token)
+                                    weight = get_char_weight(char)
+                                    expected_gap = weight * median_norm
+                                    actual_gap = gaps[i]
+                                    
+                                    # Check if the gap is significantly larger than expected
+                                    if (actual_gap - expected_gap) > (space_threshold_ratio * median_norm):
+                                        # Prevent duplicate spaces if either adjacent token is already a space
+                                        next_token = tokens[i+1] if i + 1 < len(tokens) else ''
+                                        if char != ' ' and get_token_char(next_token) != ' ':
+                                            new_tokens.append(' ')
+                                            
+                            new_text = "".join(new_tokens)
             
             if y_match:
-                y_vals = y_match.group(1).split()
-                if len(y_vals) > 1:  # Has coordinate array
-                    # Keep only first y coordinate
-                    full_tag = re.sub(r'y="[^"]+"', f'y="{y_vals[0]}"', full_tag)
-            
-            return full_tag
+                try:
+                    y_vals = [float(y) for y in y_match.group(1).split()]
+                except ValueError:
+                    y_vals = []
+                if len(y_vals) > 1:
+                    new_attributes = re.sub(r'y="[^"]+"', f'y="{y_vals[0]}"', new_attributes)
+                    
+            return f'<{tag_name}{new_attributes}>{new_text}</{tag_name}>'
+
+        # Match only leaf elements containing plain text (to prevent nested match collision)
+        tspan_pattern = r'<tspan([^>]*(?:x|y)="[^"]*\s[^"]*"[^>]*)>([^<]*)</tspan>'
+        text_pattern = r'<text([^>]*(?:x|y)="[^"]*\s[^"]*"[^>]*)>([^<]*)</text>'
         
-        # Match both <text> and <tspan> elements with space-separated coordinates
-        text_pattern = r'<text[^>]*(?:x|y)="[^"]*\s[^"]*"[^>]*>.*?</text>'
-        tspan_pattern = r'<tspan[^>]*(?:x|y)="[^"]*\s[^"]*"[^>]*>.*?</tspan>'
-        
-        svg = re.sub(text_pattern, merge_coords, svg, flags=re.DOTALL)
+        # Process tspan first, then text elements
         svg = re.sub(tspan_pattern, merge_coords, svg, flags=re.DOTALL)
+        svg = re.sub(text_pattern, merge_coords, svg, flags=re.DOTALL)
         
         return svg
 
