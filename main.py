@@ -33,6 +33,7 @@ class PdfToSvgCropper(tk.Tk):
         self.recent_files = self._load_recent_files()
         self.preserve_text = tk.BooleanVar(value=True)
         self.remove_kerning = tk.BooleanVar(value=False)
+        self.space_threshold_ratio = tk.DoubleVar(value=0.35)  # Threshold sensitivity for word space reconstruction
         self.remove_background = tk.BooleanVar(value=False)
         self.convert_grayscale = tk.BooleanVar(value=False)
         self.font_handling = tk.StringVar(value="keep")
@@ -95,8 +96,10 @@ class PdfToSvgCropper(tk.Tk):
         self.text_check = ttk.Checkbutton(top, text="Preserve text", variable=self.preserve_text)
         self.text_check.pack(side=tk.LEFT, padx=4)
 
-        self.kern_check = ttk.Checkbutton(top, text="Remove manual kerns", variable=self.remove_kerning)
-        self.kern_check.pack(side=tk.LEFT, padx=4)
+        # Open detailed popup window for kerning settings
+        btn_kern_options = ttk.Button(top, text="Kerning Options", command=self.open_kerning_options)
+        btn_kern_options.pack(side=tk.LEFT, padx=4)
+        self._create_tooltip(btn_kern_options, "Configure manual kerning reconstruction settings")
 
         self.bg_check = ttk.Checkbutton(top, text="Remove bg", variable=self.remove_background)
         self.bg_check.pack(side=tk.LEFT, padx=4)
@@ -382,7 +385,7 @@ class PdfToSvgCropper(tk.Tk):
         """Get text description of active processing options"""
         options = []
         if self.remove_kerning.get():
-            options.append("Remove kerns")
+            options.append(f"Remove kerns (th: {self.space_threshold_ratio.get():.2f})")
         if self.remove_background.get():
             options.append("Remove bg")
         if self.convert_grayscale.get():
@@ -855,16 +858,125 @@ class PdfToSvgCropper(tk.Tk):
         out.close()
         return svg
 
+    def open_kerning_options(self):
+        """Open a dialog to configure manual kerning reconstruction settings."""
+        popup = tk.Toplevel(self)
+        popup.title("Kerning Options")
+        popup.geometry("450x380")
+        popup.resizable(False, False)
+        popup.transient(self)  # Keep on top of main window
+        popup.grab_set()       # Modal dialog
+        
+        # Main container with padding
+        frame = ttk.Frame(popup, padding="15")
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Section 1: What is kerning? (Description)
+        desc_title = ttk.Label(frame, text="What is Manual Kerning?", font=('', 10, 'bold'))
+        desc_title.pack(anchor=tk.W, pady=(0, 2))
+        
+        desc_text = (
+            "Kerning is the spacing adjustment between individual characters. "
+            "PDF documents often hardcode the exact coordinates of every single letter, "
+            "which strips out natural word spaces and merges letters. "
+            "Enabling this feature attempts to dynamically reconstruct spaces between words."
+        )
+        desc_label = ttk.Label(frame, text=desc_text, wrap=410, justify=tk.LEFT)
+        desc_label.pack(anchor=tk.W, pady=(0, 15))
+        
+        # Divider
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 15))
+        
+        # Section 2: Controls
+        check_kern = ttk.Checkbutton(
+            frame, 
+            text="Enable manual kerning removal", 
+            variable=self.remove_kerning,
+            command=self._on_kerning_toggle
+        )
+        check_kern.pack(anchor=tk.W, pady=(0, 10))
+        
+        # Frame for threshold slider and its description
+        self.slider_frame = ttk.Frame(frame)
+        self.slider_frame.pack(fill=tk.X, pady=(5, 10))
+        
+        slider_label_frame = ttk.Frame(self.slider_frame)
+        slider_label_frame.pack(fill=tk.X)
+        
+        ttk.Label(slider_label_frame, text="Space Threshold Ratio:").pack(side=tk.LEFT)
+        
+        # Value display
+        val_label = ttk.Label(slider_label_frame, text=f"{self.space_threshold_ratio.get():.2f}", font=('', 9, 'bold'))
+        val_label.pack(side=tk.LEFT, padx=5)
+        
+        # Slider
+        slider = ttk.Scale(
+            self.slider_frame, 
+            from_=0.10, 
+            to=1.00, 
+            variable=self.space_threshold_ratio,
+            orient=tk.HORIZONTAL,
+            command=lambda val: val_label.config(text=f"{float(val):.2f}")
+        )
+        slider.pack(fill=tk.X, pady=(2, 5))
+        slider.bind("<ButtonRelease-1>", lambda e: self._on_slider_release())
+        
+        slider_desc = (
+            "Sensitivity threshold for inserting spaces. Lower values make the "
+            "algorithm more aggressive (adding spaces for smaller gaps). "
+            "Higher values require larger physical gaps to insert a space."
+        )
+        slider_desc_label = ttk.Label(self.slider_frame, text=slider_desc, wrap=410, justify=tk.LEFT, foreground="gray")
+        slider_desc_label.pack(anchor=tk.W)
+        
+        # Initial state update based on checkbox
+        self._update_slider_state()
+        
+        # Divider
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(10, 15))
+        
+        # Close button
+        btn_close = ttk.Button(frame, text="OK", width=10, command=popup.destroy)
+        btn_close.pack(anchor=tk.E)
+
+    def _on_kerning_toggle(self):
+        """Handle checkbox toggle inside kerning options popup."""
+        self._update_slider_state()
+        if self.doc:
+            self._render_current_page()
+
+    def _update_slider_state(self):
+        """Enable/disable slider widgets based on checkbox state."""
+        if hasattr(self, 'slider_frame') and self.slider_frame.winfo_exists():
+            state = '!disabled' if self.remove_kerning.get() else 'disabled'
+            for child in self.slider_frame.winfo_children():
+                try:
+                    if isinstance(child, ttk.Frame):
+                        for subchild in child.winfo_children():
+                            subchild.state([state])
+                    else:
+                        child.state([state])
+                except Exception:
+                    pass
+
+    def _on_slider_release(self):
+        """Update preview when slider is released."""
+        if self.doc:
+            self._render_current_page()
+
     def _remove_svg_kerning(self, svg):
         """Remove individual character positioning from SVG text elements and restore spaces"""
         import re
         import html
         
         # Relative weights of characters compared to a standard lowercase letter (weight = 1.0)
+        # Added weights for common math italic / LaTeX letters like 'e', 'a', 'o', 'c', 's' 
+        # to ensure correct spacing reconstruction after narrow characters.
         CHAR_WEIGHTS = {
             'w': 1.4, 'm': 1.4, 'W': 1.6, 'M': 1.6,
             'i': 0.4, 'l': 0.4, 't': 0.5, 'f': 0.5, 'j': 0.4, 'r': 0.6,
             'I': 0.4, '1': 0.6, ' ': 0.5,
+            'e': 0.8, 'a': 0.85, 'o': 0.85, 'c': 0.8, 's': 0.8,
             '.': 0.3, ',': 0.3, ';': 0.3, ':': 0.3, '!': 0.3, '|': 0.3,
             '-': 0.5, '_': 0.6,
             '(': 0.5, ')': 0.5, '[': 0.5, ']': 0.5, '{': 0.5, '}': 0.5,
@@ -923,9 +1035,8 @@ class PdfToSvgCropper(tk.Tk):
                             # Find the median of the normalized gaps (represents the font's standard step)
                             median_norm = sorted(normalized_gaps)[len(normalized_gaps) // 2]
                             
-                            # If a gap exceeds expected width by more than 35% of a standard char,
-                            # we treat it as an intended word space.
-                            space_threshold_ratio = 0.35
+                            # Retrieve the dynamic threshold ratio defined in the UI
+                            space_threshold_ratio = self.space_threshold_ratio.get()
                             
                             new_tokens = []
                             for i, token in enumerate(tokens):
@@ -1012,6 +1123,15 @@ class PdfToSvgCropper(tk.Tk):
                 # Strip subset prefixes often found in PDFs (e.g., "BCDEEE+Calibri" -> "Calibri")
                 name = part.split('+')[-1].strip()
                 name_lower = name.lower()
+                
+                # Handle TeX/LaTeX Computer Modern fonts (e.g., CMMI9, CMR10, CMSY9, etc.)
+                if name_lower.startswith('cm'):
+                    if 'cmss' in name_lower:
+                        return 'Arial, Helvetica, sans-serif'
+                    elif 'cmtt' in name_lower:
+                        return 'Courier New, Courier, monospace'
+                    else:
+                        return 'Times New Roman, Times, Georgia, serif'
                 
                 # Handle generic PDF font IDs (e.g., F1, F2, F12)
                 if name_lower.startswith('f') and name_lower[1:].isdigit():
