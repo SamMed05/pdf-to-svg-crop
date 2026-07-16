@@ -1,9 +1,11 @@
 import io
 import json
 import os
+import re
 import sys
+import xml.etree.ElementTree as ET
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -115,8 +117,12 @@ class PdfToSvgCropper(tk.Tk):
 
         ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
 
+        btn_preview = ttk.Button(top, text="👁", command=self.preview_selection_as_svg, style='Icon.TButton', width=3)
+        btn_preview.pack(side=tk.LEFT, padx=4)
+        self._create_tooltip(btn_preview, "Preview & Edit Text before Export")
+
         btn_export = ttk.Button(top, text="💾", command=self.export_selection_as_svg, style='Icon.TButton', width=3)
-        btn_export.pack(side=tk.LEFT, padx=4)
+        btn_export.pack(side=tk.LEFT, padx=2)
         self._create_tooltip(btn_export, "Export Selection as SVG")
 
         btn_copy = ttk.Button(top, text="📋", command=self.copy_svg_to_clipboard, style='Icon.TButton', width=3)
@@ -445,7 +451,7 @@ class PdfToSvgCropper(tk.Tk):
             messagebox.showerror("Error", f"Failed to process SVG:\n{e}")
             self._set_status(f"✗ Error processing SVG")
     
-    def _render_svg_preview(self, svg_code, canvas, background="white"):
+    def _render_svg_preview(self, svg_code, canvas, background="white", interactive=False):
         """Render SVG as preview in canvas with specified background"""
         try:
             from io import BytesIO
@@ -456,14 +462,33 @@ class PdfToSvgCropper(tk.Tk):
             png_data = cairosvg.svg2png(bytestring=svg_code.encode('utf-8'))
             
             # Load as PIL Image
-            img = Image.open(BytesIO(png_data)).convert('RGBA')
+            # img = Image.open(BytesIO(png_data)).convert('RGBA')
+            # orig_w, orig_h = img.size
             
             # Resize to fit canvas
             canvas_width = canvas.winfo_width()
             canvas_height = canvas.winfo_height()
             
+            # if canvas_width > 1 and canvas_height > 1:
+            #     img.thumbnail((canvas_width - 20, canvas_height - 20), Image.Resampling.LANCZOS)
+            
+            img = Image.open(BytesIO(png_data)).convert('RGBA')
+            orig_w, orig_h = img.size
+
+            # fit to canvas first
             if canvas_width > 1 and canvas_height > 1:
                 img.thumbnail((canvas_width - 20, canvas_height - 20), Image.Resampling.LANCZOS)
+
+            # apply interactive zoom
+            zoom = getattr(canvas, 'zoom', 1.0)
+            if zoom != 1.0:
+                img = img.resize(
+                    (int(img.size[0] * zoom), int(img.size[1] * zoom)),
+                    Image.Resampling.LANCZOS
+                )
+                
+            cx = canvas_width // 2 + getattr(canvas, 'pan_x', 0)
+            cy = canvas_height // 2 + getattr(canvas, 'pan_y', 0)
             
             # Create background based on selection
             bg_img = Image.new('RGBA', img.size)
@@ -496,10 +521,24 @@ class PdfToSvgCropper(tk.Tk):
             
             # Clear canvas and display
             canvas.delete("all")
-            canvas.create_image(canvas_width // 2, canvas_height // 2, image=photo, anchor=tk.CENTER)
+            cx, cy = canvas_width // 2, canvas_height // 2
+            canvas.create_image(cx, cy, image=photo, anchor=tk.CENTER)
             
             # Keep reference
             canvas.image = photo
+
+            if interactive:
+                thumb_w, thumb_h = img.size
+                svg_w, svg_h = self._get_svg_dimensions_from_string(svg_code, orig_w, orig_h)
+                canvas.preview_layout = {
+                    'img_left': cx - thumb_w // 2,
+                    'img_top': cy - thumb_h // 2,
+                    'thumb_w': thumb_w,
+                    'thumb_h': thumb_h,
+                    'svg_w': svg_w,
+                    'svg_h': svg_h,
+                }
+                self._draw_text_hit_regions(svg_code, canvas)
             
         except ImportError:
             # Fallback if cairosvg not available - just show text
@@ -1245,6 +1284,340 @@ class PdfToSvgCropper(tk.Tk):
         svg = re.sub(r'#([0-9a-fA-F]{6})', hex_to_gray, svg)
         
         return svg
+
+    # -------------------- Export preview / text editor --------------------
+    def _parse_svg_num(self, value, default=0.0):
+        if value is None:
+            return default
+        try:
+            return float(str(value).split()[0].replace('px', '').replace('pt', ''))
+        except (ValueError, IndexError):
+            return default
+
+    def _parse_svg_root(self, svg):
+        cleaned = re.sub(r'<\?xml[^?]*\?>', '', svg)
+        cleaned = re.sub(r'<!DOCTYPE[^>]*>', '', cleaned, flags=re.IGNORECASE)
+        return ET.fromstring(cleaned.strip())
+
+    def _svg_to_string(self, root):
+        return ET.tostring(root, encoding='unicode')
+
+    def _local_tag(self, elem):
+        return elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+
+    def _get_svg_dimensions_from_string(self, svg, fallback_w, fallback_h):
+        try:
+            root = self._parse_svg_root(svg)
+            view_box = root.get('viewBox')
+            if view_box:
+                parts = view_box.split()
+                if len(parts) == 4:
+                    return float(parts[2]), float(parts[3])
+            w = self._parse_svg_num(root.get('width'), fallback_w)
+            h = self._parse_svg_num(root.get('height'), fallback_h)
+            if w > 0 and h > 0:
+                return w, h
+        except ET.ParseError:
+            pass
+        return fallback_w, fallback_h
+
+    def _get_svg_text_metrics(self, elem, parent=None):
+        x = self._parse_svg_num(elem.get('x'))
+        y = self._parse_svg_num(elem.get('y'))
+        font_size = self._parse_svg_num(elem.get('font-size'), 12.0)
+        style = elem.get('style', '')
+        if style:
+            m = re.search(r'font-size:\s*([\d.]+)', style)
+            if m:
+                font_size = float(m.group(1))
+        if parent is not None and self._local_tag(elem) == 'tspan':
+            if x == 0:
+                x = self._parse_svg_num(parent.get('x'))
+            if y == 0:
+                y = self._parse_svg_num(parent.get('y'))
+            if font_size == 12.0:
+                pfs = self._parse_svg_num(parent.get('font-size'), 12.0)
+                pstyle = parent.get('style', '')
+                if pstyle:
+                    m = re.search(r'font-size:\s*([\d.]+)', pstyle)
+                    if m:
+                        pfs = float(m.group(1))
+                if pfs != 12.0:
+                    font_size = pfs
+        return x, y, font_size
+
+    def _collect_editable_text_items(self, root):
+        items = []
+        for elem in root.iter():
+            tag = self._local_tag(elem)
+            if tag not in ('text', 'tspan'):
+                continue
+            text = elem.text
+            if not text or not text.strip():
+                continue
+            if tag == 'text' and any(
+                self._local_tag(child) == 'tspan' and (child.text or '').strip()
+                for child in elem
+            ):
+                continue
+            parent = None
+            if tag == 'tspan':
+                for candidate in root.iter():
+                    if elem in list(candidate):
+                        parent = candidate
+                        break
+            x, y, font_size = self._get_svg_text_metrics(elem, parent)
+            items.append({
+                'text': text,
+                'x': x,
+                'y': y,
+                'font_size': font_size,
+            })
+        return items
+
+    def _update_svg_text_at_index(self, svg, index, new_text):
+        root = self._parse_svg_root(svg)
+        items = []
+        target = None
+        for elem in root.iter():
+            tag = self._local_tag(elem)
+            if tag not in ('text', 'tspan'):
+                continue
+            text = elem.text
+            if not text or not text.strip():
+                continue
+            if tag == 'text' and any(
+                self._local_tag(child) == 'tspan' and (child.text or '').strip()
+                for child in elem
+            ):
+                continue
+            if len(items) == index:
+                target = elem
+                break
+            items.append(elem)
+        if target is None:
+            raise IndexError("Text element not found")
+        target.text = new_text
+        return self._svg_to_string(root)
+
+    def _draw_text_hit_regions(self, svg, canvas):
+        if not hasattr(canvas, 'preview_layout'):
+            canvas.text_hits = []
+            return
+        layout = canvas.preview_layout
+        try:
+            root = self._parse_svg_root(svg)
+            items = self._collect_editable_text_items(root)
+        except ET.ParseError:
+            canvas.text_hits = []
+            return
+
+        zoom = getattr(canvas, 'zoom', 1.0)
+        scale_x = (layout['thumb_w'] / max(layout['svg_w'], 1)) * zoom
+        scale_y = (layout['thumb_h'] / max(layout['svg_h'], 1)) * zoom
+        hits = []
+
+        for idx, item in enumerate(items):
+            fs = item['font_size'] * scale_y
+            text_w = max(len(item['text']) * fs * 0.55, fs)
+            text_h = fs * 1.3
+            x0 = layout['img_left'] + item['x'] * scale_x + getattr(canvas, 'pan_x', 0)
+            y0 = layout['img_top'] + item['y'] * scale_y - fs * 0.85 + getattr(canvas, 'pan_y', 0)
+            x1 = x0 + text_w
+            y1 = y0 + text_h
+            hits.append((x0, y0, x1, y1, idx))
+            canvas.create_rectangle(
+                x0, y0, x1, y1,
+                outline='#3399ff', width=1, dash=(3, 3),
+                tags=('text_hit', f'hit_{idx}'),
+            )
+
+        canvas.text_hits = hits
+
+    def _on_preview_text_click(self, event, window, canvas):
+        if not hasattr(canvas, 'text_hits'):
+            return
+        for x0, y0, x1, y1, idx in canvas.text_hits:
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                try:
+                    root = self._parse_svg_root(window.current_svg)
+                    items = self._collect_editable_text_items(root)
+                    current = items[idx]['text']
+                except (ET.ParseError, IndexError):
+                    return
+                new_text = simpledialog.askstring(
+                    "Edit Text",
+                    "Edit text content:",
+                    initialvalue=current,
+                    parent=window,
+                )
+                if new_text is None or new_text == current:
+                    return
+                try:
+                    window.current_svg = self._update_svg_text_at_index(window.current_svg, idx, new_text)
+                    self._refresh_export_preview(window)
+                    window.status_label.config(text=f"Updated text #{idx + 1}")
+                except Exception as e:
+                    messagebox.showerror("Edit Text", str(e), parent=window)
+                return
+
+    def _refresh_export_preview(self, window):
+        canvas = window.preview_canvas
+        self._render_svg_preview(window.current_svg, canvas, window.bg_var.get(), interactive=True)
+        count = len(getattr(canvas, 'text_hits', []))
+        window.status_label.config(text=f"{count} editable text area(s) — click to edit")
+        
+    def _preview_zoom(self, event):
+        c = event.widget
+
+        if getattr(event, 'num', None) == 4 or getattr(event, 'delta', 0) > 0:
+            factor = 1.1
+        else:
+            factor = 0.9
+
+        c.zoom = max(0.2, min(8.0, c.zoom * factor))
+        self._refresh_export_preview(c.winfo_toplevel())
+
+    def _preview_pan_start(self, event):
+        event.widget.drag_start = (event.x, event.y)
+        event.widget.config(cursor='fleur')
+
+    def _preview_pan_drag(self, event):
+        c = event.widget
+        if not c.drag_start:
+            return
+
+        dx = event.x - c.drag_start[0]
+        dy = event.y - c.drag_start[1]
+
+        c.pan_x += dx
+        c.pan_y += dy
+        c.drag_start = (event.x, event.y)
+
+        self._refresh_export_preview(c.winfo_toplevel())
+
+    def _preview_pan_end(self, event):
+        event.widget.drag_start = None
+        event.widget.config(cursor='hand2')
+
+    def open_export_preview(self, svg):
+        window = tk.Toplevel(self)
+        window.title("Preview & Edit")
+        window.geometry("900x700")
+        window.transient(self)
+        window.current_svg = svg
+
+        main_frame = ttk.Frame(window, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        controls = ttk.Frame(main_frame)
+        controls.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(
+            controls,
+            text="Click highlighted text areas to edit before exporting.",
+        ).pack(side=tk.LEFT)
+
+        btn_export = ttk.Button(
+            controls, text="💾 Export",
+            command=lambda: self._export_from_preview(window),
+            style='Icon.TButton',
+        )
+        btn_export.pack(side=tk.RIGHT, padx=4)
+
+        btn_copy = ttk.Button(
+            controls, text="📋 Copy",
+            command=lambda: self._copy_from_preview(window),
+            style='Icon.TButton',
+        )
+        btn_copy.pack(side=tk.RIGHT, padx=4)
+
+        window.bg_var = tk.StringVar(value="White")
+        bg_combo = ttk.Combobox(controls, textvariable=window.bg_var, width=12, state="readonly")
+        bg_combo['values'] = ('White', 'Dark gray', 'Checkerboard')
+        bg_combo.current(0)
+        bg_combo.pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Label(controls, text="Background:").pack(side=tk.RIGHT)
+
+        window.preview_canvas = tk.Canvas(main_frame, bg="white", cursor="hand2")
+        
+        window.preview_canvas.zoom = 1.0
+        window.preview_canvas.pan_x = 0
+        window.preview_canvas.pan_y = 0
+        window.preview_canvas.drag_start = None
+        
+        # Ctrl + wheel = zoom
+        window.preview_canvas.bind('<Control-MouseWheel>', self._preview_zoom)
+        window.preview_canvas.bind('<Control-Button-4>', self._preview_zoom)
+        window.preview_canvas.bind('<Control-Button-5>', self._preview_zoom)
+
+        # middle mouse drag = pan
+        window.preview_canvas.bind('<Button-2>', self._preview_pan_start)
+        window.preview_canvas.bind('<B2-Motion>', self._preview_pan_drag)
+        window.preview_canvas.bind('<ButtonRelease-2>', self._preview_pan_end)
+        
+        window.preview_canvas.bind('<Configure>', lambda e: self._refresh_export_preview(window))
+        
+        window.preview_canvas.pack(fill=tk.BOTH, expand=True)
+        window.preview_canvas.bind(
+            '<Button-1>',
+            lambda e: self._on_preview_text_click(e, window, window.preview_canvas),
+        )
+        bg_combo.bind('<<ComboboxSelected>>', lambda e: self._refresh_export_preview(window))
+
+        window.status_label = ttk.Label(main_frame, text="", font=('', 9), foreground="#0066cc")
+        window.status_label.pack(anchor=tk.W, pady=(6, 0))
+
+        def initial_render():
+            if not self.preserve_text.get():
+                window.status_label.config(
+                    text="Text is exported as paths — enable 'Preserve text' to edit text here.",
+                    foreground="#cc6600",
+                )
+            self._refresh_export_preview(window)
+
+        window.after(100, initial_render)
+
+    def preview_selection_as_svg(self):
+        if not self.doc:
+            messagebox.showwarning("Preview", "Open a PDF first.")
+            return
+        sel = self._get_selection_rect_image_coords()
+        if not sel:
+            messagebox.showinfo("Preview Full Page", "No selection found. Previewing the entire page.")
+        try:
+            svg = self._svg_from_selection()
+        except Exception as e:
+            messagebox.showwarning("Preview", str(e))
+            return
+        self.open_export_preview(svg)
+
+    def _export_from_preview(self, window):
+        path = filedialog.asksaveasfilename(
+            title="Save SVG",
+            defaultextension=".svg",
+            filetypes=[("SVG files", "*.svg"), ("All files", "*.*")],
+            parent=window,
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(window.current_svg)
+            self._set_status(f"✓ Saved: {Path(path).name}")
+            window.status_label.config(text=f"Saved to {Path(path).name}")
+        except Exception as e:
+            messagebox.showerror("Export SVG", f"Failed to save SVG:\n{e}", parent=window)
+
+    def _copy_from_preview(self, window):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(window.current_svg)
+            self.update()
+            self._set_status("✓ SVG code copied to clipboard")
+            window.status_label.config(text="SVG copied to clipboard")
+        except Exception as e:
+            messagebox.showerror("Copy SVG", f"Failed to copy SVG:\n{e}", parent=window)
 
     def export_selection_as_svg(self):
         # Check if there is a selection to inform the user
